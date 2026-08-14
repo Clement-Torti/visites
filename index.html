@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>GeoNotion - Puntos de Interés</title>
+  
+  <!-- Tipografía Inter (Estilo Notion) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <!-- Iconos Lucide -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    /* ================= TEMA CLARO / VARIABLES ================= */
+    :root {
+      --bg-main: #ffffff;
+      --bg-sidebar: #fbfbfa;
+      --bg-hover: #efefee;
+      --bg-active: #e8e8e6;
+      --bg-card: #ffffff;
+      --text-main: #37352f;
+      --text-muted: #787774;
+      --border-color: #e9e9e7;
+      --accent: #2383e2;
+      --radius: 6px;
+      --font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+      --marker-bg: #ffffff;
+      --marker-border: #37352f;
+      --marker-visited-bg: #e7f6ec;
+      --marker-visited-border: #0f9d58;
+      --green: #0f9d58;
+    }
+
+    /* ================= TEMA OSCURO (NOTION DARK) ================= */
+    body.dark-mode {
+      --bg-main: #191919;
+      --bg-sidebar: #202020;
+      --bg-hover: #2c2c2c;
+      --bg-active: #353535;
+      --bg-card: #252525;
+      --text-main: #e6e6e5;
+      --text-muted: #9b9a97;
+      --border-color: #2e2e2e;
+      --marker-bg: #252525;
+      --marker-border: #ffffff;
+      --marker-visited-bg: #16301f;
+      --marker-visited-border: #4ade80;
+      --green: #4ade80;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: var(--font);
+      color: var(--text-main);
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      background: var(--bg-main);
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    /* ================= BARRA LATERAL ================= */
+    #sidebar {
+      width: 320px;
+      background-color: var(--bg-sidebar);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      z-index: 1500;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.2s;
+    }
+
+    .sidebar-header {
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .workspace-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .btn-icon {
+      background: transparent;
+      border: none;
+      padding: 6px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      transition: background 0.15s;
+    }
+    .btn-icon:hover { background: var(--bg-hover); color: var(--text-main); }
+
+    .sidebar-section {
+      padding: 12px 8px;
+      flex-grow: 1;
+      overflow-y: auto;
+    }
+
+    .section-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--text-muted);
+      padding: 6px 8px;
+      letter-spacing: 0.5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+      margin-bottom: 2px;
+      transition: background 0.1s;
+    }
+    .nav-item:hover { background-color: var(--bg-hover); }
+    .nav-item.active { background-color: var(--bg-active); font-weight: 500; }
+    
+    .nav-item-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .badge {
+      font-size: 11px;
+      background: var(--bg-hover);
+      padding: 2px 6px;
+      border-radius: 10px;
+      color: var(--text-muted);
+    }
+
+    /* ================= CONTENEDOR MAPA ================= */
+    #main-content {
+      flex: 1;
+      position: relative;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+      background-color: var(--bg-main);
+    }
+
+    /* Botón flotante para menú móvil */
+    #mobile-menu-btn {
+      display: none;
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      z-index: 1100;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+      padding: 8px;
+      cursor: pointer;
+    }
+
+    /* Barra flotante superior */
+    .map-banner {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: var(--bg-card);
+      padding: 6px 14px;
+      border-radius: 24px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid var(--border-color);
+      font-size: 13px;
+      max-width: 90%;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: var(--text-main);
+      color: var(--bg-main);
+      border: none;
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .btn-primary * {
+      color: var(--bg-main) !important;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+
+    /* ================= NOTION PAGE DRAWER ================= */
+    #notion-page-drawer {
+      position: absolute;
+      top: 0;
+      right: -550px;
+      width: 550px;
+      height: 100%;
+      background: var(--bg-card);
+      box-shadow: -4px 0 24px rgba(0,0,0,0.25);
+      z-index: 2000;
+      transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    #notion-page-drawer.open {
+      right: 0;
+    }
+
+    .page-cover {
+      height: 140px;
+      background-size: cover;
+      background-position: center;
+      position: relative;
+      background-color: var(--bg-hover);
+    }
+
+    .page-header-actions {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      display: flex;
+      gap: 6px;
+      z-index: 5;
+    }
+
+    .page-header-actions button {
+      background: var(--bg-card);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    }
+
+    .page-content {
+      padding: 0 32px 32px 32px;
+      margin-top: -30px;
+      position: relative;
+    }
+
+    .page-icon {
+      font-size: 40px;
+      width: 56px;
+      height: 56px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      cursor: pointer;
+      margin-bottom: 12px;
+    }
+
+    .page-title-input {
+      font-size: 26px;
+      font-weight: 700;
+      border: none;
+      outline: none;
+      width: 100%;
+      margin-bottom: 18px;
+      background: transparent;
+    }
+
+    /* Tabla de Propiedades */
+    .properties-table {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 16px;
+    }
+
+    .prop-row {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      align-items: center;
+      font-size: 13px;
+    }
+
+    .prop-label {
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .prop-value select, .prop-value input {
+      border: 1px solid transparent;
+      padding: 5px 8px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      width: 100%;
+      background: transparent;
+      outline: none;
+    }
+    .prop-value select:hover, .prop-value input:hover {
+      background: var(--bg-hover);
+    }
+    .prop-value select:focus, .prop-value input:focus {
+      background: var(--bg-card);
+      border-color: var(--border-color);
+    }
+    .prop-value select option {
+      background: var(--bg-card);
+      color: var(--text-main);
+    }
+
+    .block-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin: 16px 0 8px 0;
+      letter-spacing: 0.5px;
+    }
+
+    .todo-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+
+    .todo-item input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: var(--accent);
+      width: 15px;
+      height: 15px;
+    }
+
+    .todo-item input[type="text"] {
+      border: none;
+      outline: none;
+      width: 100%;
+      font-size: 14px;
+      background: transparent;
+    }
+
+    .page-notes {
+      width: 100%;
+      min-height: 120px;
+      border: none;
+      outline: none;
+      resize: vertical;
+      font-size: 14px;
+      line-height: 1.6;
+      background: transparent;
+      margin-top: 6px;
+    }
+
+    /* Overlay para móvil */
+    #sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 1400;
+      backdrop-filter: blur(2px);
+    }
+
+    /* Custom Leaflet Pin */
+    .custom-marker {
+      background: var(--marker-bg);
+      border-radius: 50%;
+      border: 2px solid var(--marker-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.3);
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .custom-marker:hover {
+      transform: scale(1.15);
+    }
+    /* Pin verde para lugares ya visitados */
+    .custom-marker.visited {
+      background: var(--marker-visited-bg);
+      border-color: var(--marker-visited-border);
+      box-shadow: 0 3px 8px rgba(15,157,88,0.45);
+    }
+
+    /* ================= FILTRO / TOGGLE ================= */
+    .filter-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px;
+      margin-bottom: 6px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .filter-row:hover { background-color: var(--bg-hover); }
+
+    .switch {
+      position: relative;
+      width: 34px;
+      height: 19px;
+      border-radius: 20px;
+      background: var(--bg-active);
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+      transition: transform 0.2s;
+    }
+    .switch.on { background: var(--green); }
+    .switch.on::after { transform: translateX(15px); }
+
+    /* Botón eliminar lista (aparece al pasar el ratón) */
+    .nav-item .row-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .nav-item:hover .row-actions { opacity: 1; }
+    @media (hover: none) {
+      .nav-item .row-actions { opacity: 0.55; }
+    }
+    .row-actions .btn-icon { padding: 3px; }
+    .row-actions .btn-icon:hover { color: #eb5757; }
+
+    .visited-dot {
+      color: var(--green);
+      display: flex;
+      align-items: center;
+    }
+
+    /* ================= MODAL ================= */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 3000;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop.open { display: flex; }
+
+    .modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      width: 100%;
+      max-width: 560px;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+      padding: 22px;
+    }
+    .modal h2 { font-size: 17px; margin-bottom: 4px; }
+    .modal p.hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 14px; }
+    .modal label { font-size: 12px; font-weight: 600; color: var(--text-muted); display: block; margin: 12px 0 4px; }
+    .modal input[type="text"], .modal textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      background: var(--bg-main);
+      font-size: 13px;
+      outline: none;
+    }
+    .modal textarea { min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.5; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn-secondary:hover { background: var(--bg-hover); }
+    #sync-status { font-size: 12px; color: var(--text-muted); margin-top: 10px; min-height: 16px; }
+
+    /* ================= RESPONSIVE DESIGN (MÓVIL & TABLET) ================= */
+    @media (max-width: 768px) {
+      #sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        transform: translateX(-100%);
+        box-shadow: 4px 0 20px rgba(0,0,0,0.25);
+      }
+
+      #sidebar.mobile-open {
+        transform: translateX(0);
+      }
+
+      #sidebar-overlay.active {
+        display: block;
+      }
+
+      #mobile-menu-btn {
+        display: flex;
+      }
+
+      .map-banner {
+        top: auto;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 12px;
+        padding: 6px 12px;
+      }
+      .map-banner span {
+        display: none; /* Ocultar texto largo en móviles */
+      }
+
+      #notion-page-drawer {
+        width: 100vw;
+        right: -100vw;
+      }
+
+      .page-content {
+        padding: 0 20px 24px 20px;
+      }
+
+      .page-title-input {
+        font-size: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Overlay para cerrar sidebar en móvil -->
+  <div id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
+
+  <!-- BARRA LATERAL -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="workspace-title">
+        <i data-lucide="map-pin" style="width: 18px; height: 18px;"></i>
+        <span>GeoNotion</span>
+      </div>
+      <div class="header-actions">
+        <!-- Toggle Modo Oscuro -->
+        <button class="btn-icon" onclick="toggleDarkMode()" title="Cambiar Tema" id="theme-btn">
+          <i data-lucide="moon" style="width: 16px; height: 16px;"></i>
+        </button>
+        <!-- Sincronización / Datos -->
+        <button class="btn-icon" onclick="openSyncModal()" title="Datos y sincronización">
+          <i data-lucide="cloud" style="width: 16px; height: 16px;"></i>
+        </button>
+        <!-- Nueva Lista -->
+        <button class="btn-icon" onclick="openCreateListModal()" title="Nueva Lista">
+          <i data-lucide="plus" style="width: 16px; height: 16px;"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="section-label">
+        <span>Listas / Bases de datos</span>
+        <i data-lucide="folder" style="width: 12px; height: 12px;"></i>
+      </div>
+      
+      <div id="lists-container"></div>
+
+      <div class="section-label" style="margin-top: 20px;">
+        <span>Puntos de Interés</span>
+        <i data-lucide="compass" style="width: 12px; height: 12px;"></i>
+      </div>
+
+      <!-- Filtro: ocultar lugares visitados -->
+      <div class="filter-row" onclick="toggleHideVisited()">
+        <div class="nav-item-left">
+          <i data-lucide="eye-off" style="width: 14px; height: 14px;"></i>
+          <span>Ocultar visitados</span>
+        </div>
+        <div class="switch" id="hide-visited-switch"></div>
+      </div>
+
+      <div id="poi-list-container"></div>
+    </div>
+  </aside>
+
+  <!-- CONTENIDO DEL MAPA -->
+  <main id="main-content">
+    <!-- Botón Menú Móvil -->
+    <button id="mobile-menu-btn" class="btn-icon" onclick="toggleSidebar(true)" aria-label="Abrir Menú">
+      <i data-lucide="menu" style="width: 20px; height: 20px;"></i>
+    </button>
+
+    <div class="map-banner">
+      <span><i data-lucide="mouse-pointer" style="width: 13px; height: 13px; display:inline; vertical-align: middle;"></i> Clic en el mapa para colocar</span>
+      <button class="btn-primary" onclick="triggerAddPoiCenter()">
+        <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Añadir punto aquí
+      </button>
+    </div>
+
+    <div id="map"></div>
+  </main>
+
+  <!-- PANEL NOTION DRAWER -->
+  <div id="notion-page-drawer">
+    <div class="page-cover" id="drawer-cover">
+      <div class="page-header-actions">
+        <button class="btn-icon" onclick="changeCoverImage()" title="Cambiar portada">
+          <i data-lucide="image" style="width: 16px; height: 16px;"></i>
+        </button>
+        <button class="btn-icon" onclick="deleteCurrentPoi()" title="Eliminar página" style="color: #eb5757;">
+          <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+        </button>
+        <button class="btn-icon" onclick="closeDrawer()" title="Cerrar">
+          <i data-lucide="x" style="width: 16px; height: 16px;"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="page-content">
+      <div class="page-icon" id="drawer-icon" onclick="changeEmoji()">📍</div>
+      
+      <input type="text" id="drawer-title" class="page-title-input" placeholder="Sin título" oninput="updatePoiField('title', this.value)">
+
+      <!-- Propiedades -->
+      <div class="properties-table">
+        <div class="prop-row">
+          <div class="prop-label"><i data-lucide="list" style="width: 14px; height: 14px;"></i> Lista</div>
+          <div class="prop-value">
+            <select id="drawer-list-select" onchange="updatePoiField('listId', this.value)"></select>
+          </div>
+        </div>
+
+        <div class="prop-row">
+          <div class="prop-label"><i data-lucide="check-circle" style="width: 14px; height: 14px;"></i> Estado</div>
+          <div class="prop-value">
+            <select id="drawer-status" onchange="updatePoiField('status', this.value)">
+              <option value="Por Visitar">📌 Por Visitar</option>
+              <option value="En Progreso">⏳ En Progreso</option>
+              <option value="Visitado">✅ Visitado</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="prop-row">
+          <div class="prop-label"><i data-lucide="calendar" style="width: 14px; height: 14px;"></i> Fecha</div>
+          <div class="prop-value">
+            <input type="date" id="drawer-date" onchange="updatePoiField('date', this.value)">
+          </div>
+        </div>
+      </div>
+
+      <!-- Checklist -->
+      <div class="block-section-title">Checklist / Tareas</div>
+      <div id="drawer-todos"></div>
+      <button class="btn-icon" onclick="addTodoItem()" style="margin-top: 4px; font-size: 13px; gap: 4px; width: fit-content;">
+        <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Añadir tarea
+      </button>
+
+      <!-- Notas -->
+      <div class="block-section-title">Notas y Documentación</div>
+      <textarea id="drawer-notes" class="page-notes" placeholder="Escribe notas, opiniones, horarios, enlaces..." oninput="updatePoiField('notes', this.value)"></textarea>
+    </div>
+  </div>
+
+  <!-- MODAL DATOS / SINCRONIZACIÓN -->
+  <div class="modal-backdrop" id="sync-modal" onclick="if(event.target===this) closeSyncModal()">
+    <div class="modal">
+      <h2>Datos y sincronización</h2>
+      <p class="hint">
+        Esta app es 100% estática (GitHub Pages, sin backend). Los datos viven en tu navegador y
+        se pueden sincronizar con una Hoja de Cálculo de Google mediante un Apps Script publicado como aplicación web.
+      </p>
+
+      <label>URL del Web App de Google Apps Script</label>
+      <input type="text" id="sync-url" placeholder="https://script.google.com/macros/s/AKfy.../exec">
+
+      <div id="sync-status"></div>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="exportJson()">Exportar JSON</button>
+        <button class="btn-secondary" onclick="document.getElementById('import-file').click()">Importar JSON</button>
+        <button class="btn-secondary" onclick="pullFromSheet()">Cargar de la nube</button>
+        <button class="btn-primary" onclick="pushToSheet()">Guardar en la nube</button>
+      </div>
+
+      <input type="file" id="import-file" accept="application/json,.json" style="display:none" onchange="importJson(this)">
+
+      <details style="margin-top: 18px;">
+        <summary style="cursor:pointer; font-size:12px; color: var(--text-muted);">Ver código de Apps Script (copiar en la hoja de cálculo)</summary>
+        <p class="hint" style="margin-top:10px;">
+          En tu Hoja de Cálculo: <b>Extensiones → Apps Script</b>, pega este código, luego
+          <b>Implementar → Nueva implementación → Aplicación web</b>, ejecutar como <i>tú mismo</i>
+          y acceso <i>Cualquier persona</i>. Copia la URL <code>/exec</code> arriba.
+        </p>
+        <textarea readonly id="apps-script-code"></textarea>
+      </details>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="closeSyncModal()">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    /* ==========================================================
+       ESTADO Y PERSISTENCIA (LOCALSTORAGE)
+    ========================================================== */
+    const STORAGE_KEY = 'geonotion_state_v2';
+    
+    let defaultState = {
+      darkMode: false,
+      activeListId: 'all',
+      hideVisited: false,
+      lists: [
+        { id: '1', name: 'Favoritos en Francia', icon: '⭐' },
+        { id: '2', name: 'Ruta Gastronómica', icon: '🍷' },
+        { id: '3', name: 'Museos & Historia', icon: '🏛️' }
+      ],
+      pois: [
+        {
+          id: 'p1',
+          listId: '1',
+          title: 'Torre Eiffel',
+          icon: '🗼',
+          lat: 48.8584,
+          lng: 2.2945,
+          status: 'Visitado',
+          date: '2024-06-15',
+          cover: 'https://images.unsplash.com/photo-1511739001486-6bfe10ce785f?auto=format&fit=crop&w=600&q=80',
+          notes: 'Imprescindible visitarla al anochecer cuando se iluminan las luces intermitentes.',
+          todos: [{ text: 'Comprar boletos cima', done: true }, { text: 'Picnic en Champ de Mars', done: false }]
+        },
+        {
+          id: 'p2',
+          listId: '3',
+          title: 'Mont Saint-Michel',
+          icon: '🏰',
+          lat: 48.6360,
+          lng: -1.5115,
+          status: 'Por Visitar',
+          date: '',
+          cover: 'https://images.unsplash.com/photo-1589820296156-2454bb8a6ad1?auto=format&fit=crop&w=600&q=80',
+          notes: 'Revisar la tabla de mareas antes de cruzar la bahía.',
+          todos: [{ text: 'Comprobar horario de mareas', done: false }, { text: 'Reservar guía de la abadía', done: false }]
+        },
+        {
+          id: 'p3',
+          listId: '2',
+          title: 'Châteauneuf-du-Pape',
+          icon: '🍇',
+          lat: 44.0566,
+          lng: 4.8315,
+          status: 'Por Visitar',
+          date: '',
+          cover: 'https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?auto=format&fit=crop&w=600&q=80',
+          notes: 'Excelente zona vinícola del valle del Ródano.',
+          todos: [{ text: 'Cata de vinos locales', done: false }]
+        }
+      ]
+    };
+
+    let state = JSON.parse(localStorage.getItem(STORAGE_KEY)) || defaultState;
+    let currentSelectedPoiId = null;
+    let markersMap = {};
+    let currentTileLayer = null;
+
+    // Compatibilidad con datos guardados antes (categoría eliminada, fecha añadida)
+    function normalizeState(s) {
+      s.hideVisited = !!s.hideVisited;
+      s.lists = s.lists || [];
+      s.pois = (s.pois || []).map(p => {
+        delete p.tag;
+        if (typeof p.date !== 'string') p.date = '';
+        return p;
+      });
+      return s;
+    }
+    state = normalizeState(state);
+
+    function saveState() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function isVisited(poi) {
+      return poi.status === 'Visitado';
+    }
+
+    // Puntos visibles según la lista activa y el filtro de visitados
+    function getVisiblePois() {
+      return state.pois.filter(p => {
+        if (state.activeListId !== 'all' && p.listId !== state.activeListId) return false;
+        if (state.hideVisited && isVisited(p)) return false;
+        return true;
+      });
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '';
+      const [y, m, d] = iso.split('-');
+      return `${d}/${m}/${y}`;
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '').replace(/[&<>"']/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
+    /* ==========================================================
+       MAPA LEAFLET & TEMAS
+    ========================================================== */
+    // Centrado en Francia [46.603354, 1.888334]
+    const map = L.map('map', { zoomControl: false }).setView([46.603354, 1.888334], 6);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    function applyMapTileLayer(isDark) {
+      if (currentTileLayer) {
+        map.removeLayer(currentTileLayer);
+      }
+      
+      const tileUrl = isDark
+        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+
+      currentTileLayer = L.tileLayer(tileUrl, {
+        attribution: '&copy; OpenStreetMap & CartoDB',
+        maxZoom: 19
+      }).addTo(map);
+    }
+
+    function toggleDarkMode() {
+      state.darkMode = !state.darkMode;
+      saveState();
+      applyTheme();
+    }
+
+    function applyTheme() {
+      if (state.darkMode) {
+        document.body.classList.add('dark-mode');
+        document.getElementById('theme-btn').innerHTML = `<i data-lucide="sun" style="width: 16px; height: 16px;"></i>`;
+      } else {
+        document.body.classList.remove('dark-mode');
+        document.getElementById('theme-btn').innerHTML = `<i data-lucide="moon" style="width: 16px; height: 16px;"></i>`;
+      }
+      applyMapTileLayer(state.darkMode);
+      renderMapMarkers();
+      lucide.createIcons();
+    }
+
+    map.on('click', (e) => {
+      createPoiAt(e.latlng.lat, e.latlng.lng);
+    });
+
+    /* ==========================================================
+       SIDEBAR & RESPONSIVE TOGGLES
+    ========================================================== */
+    function toggleSidebar(open) {
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('sidebar-overlay');
+      if (open) {
+        sidebar.classList.add('mobile-open');
+        overlay.classList.add('active');
+      } else {
+        sidebar.classList.remove('mobile-open');
+        overlay.classList.remove('active');
+      }
+    }
+
+    function renderSidebar() {
+      const listsContainer = document.getElementById('lists-container');
+      listsContainer.innerHTML = `
+        <div class="nav-item ${state.activeListId === 'all' ? 'active' : ''}" onclick="selectList('all')">
+          <div class="nav-item-left">
+            <span>🌐</span>
+            <span>Todos los puntos</span>
+          </div>
+          <span class="badge">${state.pois.length}</span>
+        </div>
+      `;
+
+      state.lists.forEach(l => {
+        const count = state.pois.filter(p => p.listId === l.id).length;
+        listsContainer.innerHTML += `
+          <div class="nav-item ${state.activeListId === l.id ? 'active' : ''}" onclick="selectList('${l.id}')">
+            <div class="nav-item-left">
+              <span>${escapeHtml(l.icon)}</span>
+              <span>${escapeHtml(l.name)}</span>
+            </div>
+            <div class="nav-item-left" style="gap: 4px;">
+              <span class="badge">${count}</span>
+              <div class="row-actions">
+                <button class="btn-icon" title="Eliminar lista" onclick="event.stopPropagation(); deleteList('${l.id}')">
+                  <i data-lucide="trash-2" style="width: 13px; height: 13px;"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+
+      document.getElementById('hide-visited-switch').classList.toggle('on', state.hideVisited);
+
+      const poiListContainer = document.getElementById('poi-list-container');
+      poiListContainer.innerHTML = '';
+
+      const filteredPois = getVisiblePois();
+
+      filteredPois.forEach(p => {
+        poiListContainer.innerHTML += `
+          <div class="nav-item ${currentSelectedPoiId === p.id ? 'active' : ''}" onclick="openPoiDrawer('${p.id}'); toggleSidebar(false);">
+            <div class="nav-item-left">
+              <span>${escapeHtml(p.icon || '📍')}</span>
+              <span>${escapeHtml(p.title || 'Sin título')}</span>
+            </div>
+            <div class="nav-item-left" style="gap: 6px;">
+              <span style="font-size: 11px; color: var(--text-muted);">${formatDate(p.date)}</span>
+              ${isVisited(p) ? '<span class="visited-dot"><i data-lucide="check-circle-2" style="width: 13px; height: 13px;"></i></span>' : ''}
+            </div>
+          </div>
+        `;
+      });
+
+      lucide.createIcons();
+    }
+
+    function toggleHideVisited() {
+      state.hideVisited = !state.hideVisited;
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+    }
+
+    function renderMapMarkers() {
+      Object.values(markersMap).forEach(m => map.removeLayer(m));
+      markersMap = {};
+
+      const filteredPois = getVisiblePois();
+
+      filteredPois.forEach(poi => {
+        const customIcon = L.divIcon({
+          className: 'custom-marker' + (isVisited(poi) ? ' visited' : ''),
+          html: `<div style="width:34px; height:34px; display:flex; align-items:center; justify-content:center;">${escapeHtml(poi.icon || '📍')}</div>`,
+          iconSize: [34, 34],
+          iconAnchor: [17, 17]
+        });
+
+        const marker = L.marker([poi.lat, poi.lng], { icon: customIcon }).addTo(map);
+        marker.on('click', (e) => {
+          L.DomEvent.stopPropagation(e);
+          openPoiDrawer(poi.id);
+        });
+
+        markersMap[poi.id] = marker;
+      });
+    }
+
+    function selectList(listId) {
+      state.activeListId = listId;
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+      toggleSidebar(false);
+    }
+
+    function openCreateListModal() {
+      const name = prompt('Nombre de la nueva lista:');
+      if (!name) return;
+      const icon = prompt('Icono / Emoji:', '📁') || '📁';
+      
+      const newList = { id: Date.now().toString(), name, icon };
+      state.lists.push(newList);
+      state.activeListId = newList.id;
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+    }
+
+    function deleteList(listId) {
+      const list = state.lists.find(l => l.id === listId);
+      if (!list) return;
+
+      const pois = state.pois.filter(p => p.listId === listId);
+      const msg = pois.length
+        ? `¿Eliminar la lista "${list.name}" y sus ${pois.length} punto(s) de interés?`
+        : `¿Eliminar la lista "${list.name}"?`;
+      if (!confirm(msg)) return;
+
+      state.lists = state.lists.filter(l => l.id !== listId);
+      const removedIds = new Set(pois.map(p => p.id));
+      state.pois = state.pois.filter(p => p.listId !== listId);
+
+      if (state.activeListId === listId) state.activeListId = 'all';
+      if (removedIds.has(currentSelectedPoiId)) closeDrawer();
+
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+    }
+
+    /* ==========================================================
+       GESTIÓN DE POI (PAGE DRAWER)
+    ========================================================== */
+    function createPoiAt(lat, lng) {
+      // Siempre debe existir al menos una lista donde colocar el punto
+      if (!state.lists.length) {
+        state.lists.push({ id: Date.now().toString(), name: 'Mis lugares', icon: '📁' });
+      }
+
+      const newPoi = {
+        id: 'poi_' + Date.now(),
+        listId: state.activeListId === 'all' ? state.lists[0].id : state.activeListId,
+        title: 'Nuevo Lugar',
+        icon: '📍',
+        lat: lat,
+        lng: lng,
+        status: 'Por Visitar',
+        date: '',
+        cover: 'https://images.unsplash.com/photo-1499856871958-5b9627545d1a?auto=format&fit=crop&w=600&q=80',
+        notes: '',
+        todos: []
+      };
+
+      state.pois.push(newPoi);
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+      openPoiDrawer(newPoi.id);
+    }
+
+    function triggerAddPoiCenter() {
+      const center = map.getCenter();
+      createPoiAt(center.lat, center.lng);
+    }
+
+    function openPoiDrawer(id) {
+      const poi = state.pois.find(p => p.id === id);
+      if (!poi) return;
+
+      currentSelectedPoiId = id;
+
+      document.getElementById('drawer-title').value = poi.title;
+      document.getElementById('drawer-icon').innerText = poi.icon || '📍';
+      document.getElementById('drawer-cover').style.backgroundImage = `url('${poi.cover || ''}')`;
+      document.getElementById('drawer-status').value = poi.status || 'Por Visitar';
+      document.getElementById('drawer-date').value = poi.date || '';
+      document.getElementById('drawer-notes').value = poi.notes || '';
+
+      const listSelect = document.getElementById('drawer-list-select');
+      listSelect.innerHTML = '';
+      state.lists.forEach(l => {
+        const opt = document.createElement('option');
+        opt.value = l.id;
+        opt.innerText = `${l.icon} ${l.name}`;
+        opt.selected = (l.id === poi.listId);
+        listSelect.appendChild(opt);
+      });
+
+      renderTodos(poi);
+      map.panTo([poi.lat, poi.lng], { animate: true, duration: 0.5 });
+      document.getElementById('notion-page-drawer').classList.add('open');
+      renderSidebar();
+    }
+
+    function closeDrawer() {
+      document.getElementById('notion-page-drawer').classList.remove('open');
+      currentSelectedPoiId = null;
+      renderSidebar();
+    }
+
+    function updatePoiField(field, value) {
+      const poi = state.pois.find(p => p.id === currentSelectedPoiId);
+      if (!poi) return;
+
+      poi[field] = value;
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+    }
+
+    function changeEmoji() {
+      const current = state.pois.find(p => p.id === currentSelectedPoiId);
+      const newIcon = prompt('Introduce un emoji representativo:', current?.icon || '📍');
+      if (newIcon) {
+        document.getElementById('drawer-icon').innerText = newIcon;
+        updatePoiField('icon', newIcon);
+      }
+    }
+
+    function changeCoverImage() {
+      const url = prompt('URL de la imagen de portada:');
+      if (url) {
+        document.getElementById('drawer-cover').style.backgroundImage = `url('${url}')`;
+        updatePoiField('cover', url);
+      }
+    }
+
+    function deleteCurrentPoi() {
+      if (confirm('¿Eliminar este punto de interés y su contenido?')) {
+        state.pois = state.pois.filter(p => p.id !== currentSelectedPoiId);
+        saveState();
+        closeDrawer();
+        renderMapMarkers();
+      }
+    }
+
+    /* ==========================================================
+       CHECKLIST DE TAREAS
+    ========================================================== */
+    function renderTodos(poi) {
+      const todosContainer = document.getElementById('drawer-todos');
+      todosContainer.innerHTML = '';
+
+      (poi.todos || []).forEach((t, index) => {
+        const item = document.createElement('div');
+        item.className = 'todo-item';
+        item.innerHTML = `
+          <input type="checkbox" ${t.done ? 'checked' : ''} onchange="toggleTodo(${index})">
+          <input type="text" value="${t.text}" style="${t.done ? 'text-decoration: line-through; color: var(--text-muted);' : ''}" onchange="updateTodoText(${index}, this.value)" placeholder="Escribe un ítem...">
+          <button class="btn-icon" onclick="removeTodo(${index})" style="opacity: 0.6;"><i data-lucide="x" style="width: 13px; height: 13px;"></i></button>
+        `;
+        todosContainer.appendChild(item);
+      });
+      lucide.createIcons();
+    }
+
+    function addTodoItem() {
+      const poi = state.pois.find(p => p.id === currentSelectedPoiId);
+      if (!poi) return;
+      if (!poi.todos) poi.todos = [];
+      poi.todos.push({ text: '', done: false });
+      saveState();
+      renderTodos(poi);
+    }
+
+    function toggleTodo(index) {
+      const poi = state.pois.find(p => p.id === currentSelectedPoiId);
+      if (!poi) return;
+      poi.todos[index].done = !poi.todos[index].done;
+      saveState();
+      renderTodos(poi);
+    }
+
+    function updateTodoText(index, text) {
+      const poi = state.pois.find(p => p.id === currentSelectedPoiId);
+      if (!poi) return;
+      poi.todos[index].text = text;
+      saveState();
+    }
+
+    function removeTodo(index) {
+      const poi = state.pois.find(p => p.id === currentSelectedPoiId);
+      if (!poi) return;
+      poi.todos.splice(index, 1);
+      saveState();
+      renderTodos(poi);
+    }
+
+    /* ==========================================================
+       DATOS: EXPORT / IMPORT + GOOGLE SHEETS (APPS SCRIPT)
+       Sin backend propio: la app es estática (GitHub Pages) y los
+       datos viven en localStorage + una hoja de cálculo de Google.
+    ========================================================== */
+    const SYNC_URL_KEY = 'geonotion_sync_url';
+
+    const APPS_SCRIPT_CODE = `/** GeoNotion - Backend en Google Sheets */
+const LISTS_SHEET = 'lists';
+const POIS_SHEET  = 'pois';
+const LIST_COLS = ['id', 'name', 'icon'];
+const POI_COLS  = ['id', 'listId', 'title', 'icon', 'lat', 'lng', 'status', 'date', 'cover', 'notes', 'todos'];
+
+function doGet() {
+  return json_({ lists: read_(LISTS_SHEET, LIST_COLS), pois: read_(POIS_SHEET, POI_COLS) });
+}
+
+function doPost(e) {
+  var data = JSON.parse(e.postData.contents);
+  write_(LISTS_SHEET, LIST_COLS, data.lists || []);
+  write_(POIS_SHEET, POI_COLS, data.pois || []);
+  return json_({ ok: true });
+}
+
+function read_(name, cols) {
+  var sh = sheet_(name, cols);
+  var values = sh.getDataRange().getValues();
+  if (values.length < 2) return [];
+  var head = values[0];
+  return values.slice(1).filter(function (r) { return r[0] !== ''; }).map(function (row) {
+    var o = {};
+    cols.forEach(function (c) {
+      var v = row[head.indexOf(c)];
+      if (c === 'todos') { try { v = JSON.parse(v || '[]'); } catch (err) { v = []; } }
+      if (c === 'lat' || c === 'lng') v = Number(v);
+      if (c === 'date' && v instanceof Date) v = Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      o[c] = v;
+    });
+    return o;
+  });
+}
+
+function write_(name, cols, rows) {
+  var sh = sheet_(name, cols);
+  sh.clear();
+  var out = [cols].concat(rows.map(function (r) {
+    return cols.map(function (c) {
+      var v = r[c];
+      if (c === 'todos') return JSON.stringify(v || []);
+      return (v === undefined || v === null) ? '' : v;
+    });
+  }));
+  sh.getRange(1, 1, out.length, cols.length).setValues(out);
+}
+
+function sheet_(name, cols) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(name);
+  if (!sh) { sh = ss.insertSheet(name); sh.appendRow(cols); }
+  return sh;
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}`;
+
+    function openSyncModal() {
+      document.getElementById('sync-url').value = localStorage.getItem(SYNC_URL_KEY) || '';
+      document.getElementById('apps-script-code').value = APPS_SCRIPT_CODE;
+      setSyncStatus('');
+      document.getElementById('sync-modal').classList.add('open');
+      toggleSidebar(false);
+    }
+
+    function closeSyncModal() {
+      document.getElementById('sync-modal').classList.remove('open');
+    }
+
+    function setSyncStatus(msg, isError) {
+      const el = document.getElementById('sync-status');
+      el.innerText = msg;
+      el.style.color = isError ? '#eb5757' : 'var(--text-muted)';
+    }
+
+    function getSyncUrl() {
+      const url = document.getElementById('sync-url').value.trim();
+      if (!url) {
+        setSyncStatus('Introduce primero la URL del Web App.', true);
+        return null;
+      }
+      localStorage.setItem(SYNC_URL_KEY, url);
+      return url;
+    }
+
+    async function pushToSheet() {
+      const url = getSyncUrl();
+      if (!url) return;
+      setSyncStatus('Guardando en la hoja de cálculo...');
+      try {
+        // text/plain evita la petición preflight que Apps Script no responde
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ lists: state.lists, pois: state.pois })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        setSyncStatus('Guardado correctamente en Google Sheets.');
+      } catch (err) {
+        setSyncStatus('Error al guardar: ' + err.message, true);
+      }
+    }
+
+    async function pullFromSheet() {
+      const url = getSyncUrl();
+      if (!url) return;
+      if (!confirm('Se reemplazarán los datos locales por los de la hoja de cálculo. ¿Continuar?')) return;
+      setSyncStatus('Cargando desde la hoja de cálculo...');
+      try {
+        const res = await fetch(url, { method: 'GET' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        applyImportedData(data);
+        setSyncStatus('Datos cargados desde Google Sheets.');
+      } catch (err) {
+        setSyncStatus('Error al cargar: ' + err.message, true);
+      }
+    }
+
+    function applyImportedData(data) {
+      if (!data || !Array.isArray(data.pois) || !Array.isArray(data.lists)) {
+        throw new Error('formato de datos no válido');
+      }
+      state.lists = data.lists;
+      state.pois = data.pois;
+      state.activeListId = 'all';
+      normalizeState(state);
+      currentSelectedPoiId = null;
+      closeDrawer();
+      saveState();
+      renderSidebar();
+      renderMapMarkers();
+    }
+
+    function exportJson() {
+      const blob = new Blob(
+        [JSON.stringify({ lists: state.lists, pois: state.pois }, null, 2)],
+        { type: 'application/json' }
+      );
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'geonotion-datos.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setSyncStatus('Archivo JSON exportado.');
+    }
+
+    function importJson(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          applyImportedData(JSON.parse(reader.result));
+          setSyncStatus('Datos importados desde el archivo.');
+        } catch (err) {
+          setSyncStatus('Archivo no válido: ' + err.message, true);
+        }
+        input.value = '';
+      };
+      reader.readAsText(file);
+    }
+
+    // Inicialización
+    applyTheme();
+    renderSidebar();
+  </script>
+</body>
+</html>
