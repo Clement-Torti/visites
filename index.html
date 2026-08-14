@@ -3,8 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>GeoNotion - Puntos de Interés</title>
-  
+  <title>Visites</title>
+
+  <!-- Favicon: pin de mapa en el verde de "visitado" (SVG en línea, sin archivo externo) -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http://www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Cpath%20d%3D%22M16%202.5c-5.2%200-9.5%204.2-9.5%209.5%200%207%208.4%2016.5%209.1%2017.3.2.2.6.2.8%200%20.7-.8%209.1-10.3%209.1-17.3%200-5.3-4.3-9.5-9.5-9.5z%22%20fill%3D%22%230f9d58%22/%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2212%22%20r%3D%223.8%22%20fill%3D%22%23ffffff%22/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#0f9d58">
+
   <!-- Tipografía Inter (Estilo Notion) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -542,6 +546,35 @@
     .btn-secondary:hover { background: var(--bg-hover); }
     #sync-status { font-size: 12px; color: var(--text-muted); margin-top: 10px; min-height: 16px; }
 
+    /* ================= ESTADO DE SINCRONIZACIÓN ================= */
+    /* El icono de la nube cambia de color según haya cambios sin guardar */
+    #sync-btn.sync-ok, #sync-btn.sync-ok:hover { color: var(--green); }
+    #sync-btn.sync-dirty, #sync-btn.sync-dirty:hover { color: #e9a23b; }
+    #sync-btn.sync-error, #sync-btn.sync-error:hover { color: #eb5757; }
+    #sync-btn.sync-busy { color: var(--accent); }
+    #sync-btn.sync-busy svg { animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 28px;
+      transform: translate(-50%, 12px);
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+      border-radius: 8px;
+      padding: 9px 16px;
+      font-size: 13px;
+      z-index: 4000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s, transform 0.2s;
+      max-width: 90vw;
+      text-align: center;
+    }
+    #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
     /* ================= RESPONSIVE DESIGN (MÓVIL & TABLET) ================= */
     @media (max-width: 768px) {
       #sidebar {
@@ -573,8 +606,8 @@
         font-size: 12px;
         padding: 6px 12px;
       }
-      .map-banner span {
-        display: none; /* Ocultar texto largo en móviles */
+      #toast {
+        bottom: 76px; /* Por encima de la barra flotante del mapa */
       }
 
       #notion-page-drawer {
@@ -602,7 +635,7 @@
     <div class="sidebar-header">
       <div class="workspace-title">
         <i data-lucide="map-pin" style="width: 18px; height: 18px;"></i>
-        <span>GeoNotion</span>
+        <span>Visites</span>
       </div>
       <div class="header-actions">
         <!-- Toggle Modo Oscuro -->
@@ -610,7 +643,7 @@
           <i data-lucide="moon" style="width: 16px; height: 16px;"></i>
         </button>
         <!-- Sincronización / Datos -->
-        <button class="btn-icon" onclick="openSyncModal()" title="Datos y sincronización">
+        <button class="btn-icon" id="sync-btn" onclick="openSyncModal()" title="Datos y sincronización">
           <i data-lucide="cloud" style="width: 16px; height: 16px;"></i>
         </button>
         <!-- Nueva Lista -->
@@ -654,10 +687,7 @@
     </button>
 
     <div class="map-banner">
-      <span><i data-lucide="mouse-pointer" style="width: 13px; height: 13px; display:inline; vertical-align: middle;"></i> Clic en el mapa para colocar</span>
-      <button class="btn-primary" onclick="triggerAddPoiCenter()">
-        <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Añadir punto aquí
-      </button>
+      <span><i data-lucide="mouse-pointer" style="width: 13px; height: 13px; display:inline; vertical-align: middle;"></i> Clic en el mapa para colocar un punto</span>
     </div>
 
     <div id="map"></div>
@@ -724,6 +754,9 @@
       <textarea id="drawer-notes" class="page-notes" placeholder="Escribe notas, opiniones, horarios, enlaces..." oninput="updatePoiField('notes', this.value)"></textarea>
     </div>
   </div>
+
+  <!-- Aviso flotante (guardado en la nube, errores...) -->
+  <div id="toast"></div>
 
   <!-- MODAL DATOS / SINCRONIZACIÓN -->
   <div class="modal-backdrop" id="sync-modal" onclick="if(event.target===this) closeSyncModal()">
@@ -845,6 +878,7 @@
 
     function saveState() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      updateSyncIndicator();
     }
 
     function isVisited(poi) {
@@ -1093,11 +1127,6 @@
       openPoiDrawer(newPoi.id);
     }
 
-    function triggerAddPoiCenter() {
-      const center = map.getCenter();
-      createPoiAt(center.lat, center.lng);
-    }
-
     function openPoiDrawer(id) {
       const poi = state.pois.find(p => p.id === id);
       if (!poi) return;
@@ -1227,8 +1256,9 @@
        datos viven en localStorage + una hoja de cálculo de Google.
     ========================================================== */
     const SYNC_URL_KEY = 'geonotion_sync_url';
+    const SNAPSHOT_KEY = 'geonotion_synced_snapshot';
 
-    const APPS_SCRIPT_CODE = `/** GeoNotion - Backend en Google Sheets */
+    const APPS_SCRIPT_CODE = `/** Visites - Backend en Google Sheets */
 const LISTS_SHEET = 'lists';
 const POIS_SHEET  = 'pois';
 const LIST_COLS = ['id', 'name', 'icon'];
@@ -1306,19 +1336,88 @@ function json_(obj) {
       el.style.color = isError ? '#eb5757' : 'var(--text-muted)';
     }
 
-    function getSyncUrl() {
-      const url = document.getElementById('sync-url').value.trim();
+    function getSyncUrl(silent) {
+      const typed = document.getElementById('sync-url').value.trim();
+      const url = typed || localStorage.getItem(SYNC_URL_KEY) || '';
       if (!url) {
-        setSyncStatus('Introduce primero la URL del Web App.', true);
+        if (!silent) setSyncStatus('Introduce primero la URL del Web App.', true);
         return null;
       }
       localStorage.setItem(SYNC_URL_KEY, url);
       return url;
     }
 
+    /* ---------- Estado de sincronización (icono nube + ⌘S) ---------- */
+
+    // Sólo lists y pois viajan a la nube; el tema o el filtro son locales
+    function syncSnapshot() {
+      return JSON.stringify({ lists: state.lists, pois: state.pois });
+    }
+
+    function markSynced() {
+      localStorage.setItem(SNAPSHOT_KEY, syncSnapshot());
+      updateSyncIndicator();
+    }
+
+    function hasUnsyncedChanges() {
+      return localStorage.getItem(SNAPSHOT_KEY) !== syncSnapshot();
+    }
+
+    // Estados: 'off' (sin configurar), 'dirty', 'ok', 'busy', 'error'
+    function updateSyncIndicator(forced) {
+      const btn = document.getElementById('sync-btn');
+      if (!btn) return;
+
+      let mode = forced;
+      if (!mode) {
+        if (!localStorage.getItem(SYNC_URL_KEY)) mode = 'off';
+        else mode = hasUnsyncedChanges() ? 'dirty' : 'ok';
+      }
+
+      const icons = { off: 'cloud', dirty: 'cloud-upload', ok: 'cloud', busy: 'refresh-cw', error: 'cloud-off' };
+      const titles = {
+        off: 'Datos y sincronización (sin configurar)',
+        dirty: 'Cambios sin guardar en la nube — ⌘S para guardar',
+        ok: 'Todo guardado en la nube',
+        busy: 'Guardando...',
+        error: 'Error de sincronización'
+      };
+
+      btn.className = 'btn-icon sync-' + mode;
+      btn.title = titles[mode];
+      btn.innerHTML = `<i data-lucide="${icons[mode]}" style="width: 16px; height: 16px;"></i>`;
+      lucide.createIcons();
+    }
+
+    let toastTimer = null;
+    function showToast(msg, isError) {
+      const el = document.getElementById('toast');
+      el.innerText = msg;
+      el.style.color = isError ? '#eb5757' : 'var(--text-main)';
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+    }
+
+    // ⌘S / Ctrl+S guarda en la nube desde cualquier parte de la app
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        // Confirma el campo en edición (los onchange sólo disparan al perder el foco)
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        pushToSheet();
+      }
+    });
+
     async function pushToSheet() {
-      const url = getSyncUrl();
-      if (!url) return;
+      const url = getSyncUrl(true);
+      if (!url) {
+        openSyncModal();
+        setSyncStatus('Introduce primero la URL del Web App.', true);
+        return;
+      }
+
+      updateSyncIndicator('busy');
       setSyncStatus('Guardando en la hoja de cálculo...');
       try {
         // text/plain evita la petición preflight que Apps Script no responde
@@ -1328,24 +1427,34 @@ function json_(obj) {
           body: JSON.stringify({ lists: state.lists, pois: state.pois })
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
+        markSynced();
         setSyncStatus('Guardado correctamente en Google Sheets.');
+        showToast('Guardado en la nube');
       } catch (err) {
+        updateSyncIndicator('error');
         setSyncStatus('Error al guardar: ' + err.message, true);
+        showToast('Error al guardar: ' + err.message, true);
       }
     }
 
     async function pullFromSheet() {
       const url = getSyncUrl();
       if (!url) return;
+      if (hasUnsyncedChanges() && !confirm('Tienes cambios locales sin guardar en la nube. Se perderán al cargar. ¿Continuar?')) return;
       if (!confirm('Se reemplazarán los datos locales por los de la hoja de cálculo. ¿Continuar?')) return;
+
+      updateSyncIndicator('busy');
       setSyncStatus('Cargando desde la hoja de cálculo...');
       try {
         const res = await fetch(url, { method: 'GET' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         applyImportedData(data);
+        markSynced();
         setSyncStatus('Datos cargados desde Google Sheets.');
+        showToast('Datos cargados de la nube');
       } catch (err) {
+        updateSyncIndicator('error');
         setSyncStatus('Error al cargar: ' + err.message, true);
       }
     }
@@ -1372,7 +1481,7 @@ function json_(obj) {
       );
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'geonotion-datos.json';
+      a.download = 'visites-datos.json';
       a.click();
       URL.revokeObjectURL(a.href);
       setSyncStatus('Archivo JSON exportado.');
@@ -1397,6 +1506,7 @@ function json_(obj) {
     // Inicialización
     applyTheme();
     renderSidebar();
+    updateSyncIndicator();
   </script>
 </body>
 </html>
