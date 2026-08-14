@@ -203,13 +203,14 @@
       cursor: pointer;
     }
 
-    /* Barra flotante superior */
+    /* Barra flotante inferior (el buscador ocupa la parte superior) */
     .map-banner {
       position: absolute;
-      top: 14px;
+      bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
       z-index: 1000;
+      color: var(--text-muted);
       background: var(--bg-card);
       padding: 6px 14px;
       border-radius: 24px;
@@ -558,7 +559,7 @@
     #toast {
       position: fixed;
       left: 50%;
-      bottom: 28px;
+      bottom: 76px; /* Por encima de la barra flotante del mapa */
       transform: translate(-50%, 12px);
       background: var(--bg-card);
       border: 1px solid var(--border-color);
@@ -574,6 +575,89 @@
       text-align: center;
     }
     #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    /* ================= BUSCADOR DE LUGARES ================= */
+    .map-search-wrap {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(460px, calc(100% - 120px));
+      z-index: 1100;
+    }
+
+    .map-search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 7px 8px 7px 14px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
+
+    .map-search input {
+      flex: 1;
+      min-width: 0;
+      border: none;
+      outline: none;
+      background: transparent;
+      font-size: 13px;
+    }
+    .map-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+    #search-results {
+      display: none;
+      margin-top: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.2);
+      overflow: hidden auto;
+      max-height: 45vh;
+    }
+    #search-results.open { display: block; }
+
+    .search-result {
+      padding: 9px 14px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .search-result:last-child { border-bottom: none; }
+    .search-result:hover { background: var(--bg-hover); }
+    .sr-title { font-size: 13px; font-weight: 500; }
+    .sr-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .search-msg { padding: 12px 14px; font-size: 12px; color: var(--text-muted); }
+
+    /* Marcador temporal del resultado buscado */
+    .search-marker {
+      background: var(--accent);
+      border: 2px solid #fff;
+      border-radius: 50%;
+      box-shadow: 0 3px 10px rgba(35,131,226,0.5);
+      animation: pulse-marker 1.6s ease-out infinite;
+    }
+    @keyframes pulse-marker {
+      0%   { box-shadow: 0 0 0 0 rgba(35,131,226,0.5); }
+      100% { box-shadow: 0 0 0 14px rgba(35,131,226,0); }
+    }
+
+    /* Popups de Leaflet adaptados al tema */
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+      background: var(--bg-card);
+      color: var(--text-main);
+      box-shadow: 0 4px 18px rgba(0,0,0,0.25);
+    }
+    .leaflet-popup-content { margin: 12px 14px; }
+    .leaflet-container a.leaflet-popup-close-button { color: var(--text-muted); }
 
     /* ================= RESPONSIVE DESIGN (MÓVIL & TABLET) ================= */
     @media (max-width: 768px) {
@@ -599,15 +683,16 @@
       }
 
       .map-banner {
-        top: auto;
-        bottom: 24px;
-        left: 50%;
-        transform: translateX(-50%);
         font-size: 12px;
         padding: 6px 12px;
       }
-      #toast {
-        bottom: 76px; /* Por encima de la barra flotante del mapa */
+
+      /* El buscador se sitúa a la derecha del botón de menú */
+      .map-search-wrap {
+        left: 62px;
+        right: 14px;
+        width: auto;
+        transform: none;
       }
 
       #notion-page-drawer {
@@ -685,6 +770,20 @@
     <button id="mobile-menu-btn" class="btn-icon" onclick="toggleSidebar(true)" aria-label="Abrir Menú">
       <i data-lucide="menu" style="width: 20px; height: 20px;"></i>
     </button>
+
+    <!-- Buscador de lugares (geocodificación con OpenStreetMap) -->
+    <div class="map-search-wrap">
+      <form class="map-search" onsubmit="event.preventDefault(); runPlaceSearch();">
+        <i data-lucide="search" style="width: 15px; height: 15px; color: var(--text-muted); flex-shrink: 0;"></i>
+        <input type="search" id="search-input" autocomplete="off"
+               placeholder="Buscar un lugar. Ej. Restaurant Bambino, Milán"
+               onkeydown="if (event.key === 'Escape') clearPlaceSearch()">
+        <button type="submit" class="btn-icon" id="search-btn" title="Buscar" aria-label="Buscar">
+          <i data-lucide="arrow-right" style="width: 15px; height: 15px;"></i>
+        </button>
+      </form>
+      <div id="search-results"></div>
+    </div>
 
     <div class="map-banner">
       <span><i data-lucide="mouse-pointer" style="width: 13px; height: 13px; display:inline; vertical-align: middle;"></i> Clic en el mapa para colocar un punto</span>
@@ -948,7 +1047,182 @@
     }
 
     map.on('click', (e) => {
+      // Si hay un resultado de búsqueda abierto, el primer clic sólo lo descarta
+      if (searchMarker && searchMarker.isPopupOpen()) {
+        removeSearchMarker();
+        return;
+      }
       createPoiAt(e.latlng.lat, e.latlng.lng);
+    });
+
+    /* ==========================================================
+       BUSCADOR DE LUGARES (OPENSTREETMAP)
+       Photon busca por nombre y da prioridad a lo que hay cerca del
+       centro del mapa; Nominatim entra como reserva y es mejor para
+       direcciones postales. Se busca al pulsar Enter, no mientras se
+       escribe: la política de Nominatim no admite autocompletado.
+    ========================================================== */
+    let searchMarker = null;
+    let lastSearchResult = null;
+    let searchResults = [];
+
+    function showSearchPanel(html) {
+      const box = document.getElementById('search-results');
+      box.innerHTML = html;
+      box.classList.add('open');
+    }
+
+    function hideSearchPanel() {
+      document.getElementById('search-results').classList.remove('open');
+    }
+
+    function clearPlaceSearch() {
+      document.getElementById('search-input').value = '';
+      hideSearchPanel();
+      removeSearchMarker();
+    }
+
+    function removeSearchMarker() {
+      if (searchMarker) {
+        map.removeLayer(searchMarker);
+        searchMarker = null;
+      }
+      lastSearchResult = null;
+    }
+
+    async function runPlaceSearch() {
+      const query = document.getElementById('search-input').value.trim();
+      if (query.length < 3) {
+        showSearchPanel('<div class="search-msg">Escribe al menos 3 caracteres.</div>');
+        return;
+      }
+
+      showSearchPanel('<div class="search-msg">Buscando...</div>');
+      try {
+        let results = await searchPhoton(query);
+        if (!results.length) results = await searchNominatim(query);
+        renderSearchResults(results);
+      } catch (err) {
+        showSearchPanel(`<div class="search-msg">Error en la búsqueda: ${escapeHtml(err.message)}</div>`);
+      }
+    }
+
+    // Resultado normalizado: { lat, lng, label, sub, bounds }
+    async function searchPhoton(query) {
+      const c = map.getCenter();
+      const url = 'https://photon.komoot.io/api/?limit=6'
+        + '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4)
+        + '&q=' + encodeURIComponent(query);
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+
+      return (data.features || []).map(f => {
+        const p = f.properties;
+        const [lng, lat] = f.geometry.coordinates;
+        const street = [p.street, p.housenumber].filter(Boolean).join(' ');
+        const label = p.name || street || p.city || p.state || p.country;
+        const sub = [p.name ? street : null, p.city || p.county, p.state, p.country]
+          .filter(Boolean).join(', ');
+        // extent de Photon: [oeste, norte, este, sur]
+        const e = p.extent;
+        const bounds = e ? [[e[3], e[0]], [e[1], e[2]]] : null;
+        return { lat, lng, label, sub, bounds };
+      }).filter(r => r.label);
+    }
+
+    async function searchNominatim(query) {
+      const url = 'https://nominatim.openstreetmap.org/search'
+        + '?format=jsonv2&addressdetails=1&limit=6&accept-language=es&q='
+        + encodeURIComponent(query);
+
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+
+      return data.map(r => {
+        const parts = r.display_name.split(',');
+        const b = r.boundingbox;
+        return {
+          lat: parseFloat(r.lat),
+          lng: parseFloat(r.lon),
+          label: r.name || parts[0].trim(),
+          sub: parts.slice(1).join(',').trim(),
+          // boundingbox de Nominatim: [sur, norte, oeste, este]
+          bounds: b ? [[+b[0], +b[2]], [+b[1], +b[3]]] : null
+        };
+      });
+    }
+
+    function renderSearchResults(results) {
+      searchResults = results;
+
+      if (!results.length) {
+        showSearchPanel('<div class="search-msg">Sin resultados. Prueba con el nombre de la calle o acerca el mapa a la zona.</div>');
+        return;
+      }
+
+      showSearchPanel(results.map((r, i) => `
+        <div class="search-result" onclick="selectSearchResult(${i})">
+          <div class="sr-title">${escapeHtml(r.label)}</div>
+          <div class="sr-sub">${escapeHtml(r.sub)}</div>
+        </div>
+      `).join(''));
+    }
+
+    function selectSearchResult(index) {
+      const r = searchResults[index];
+      if (!r) return;
+
+      removeSearchMarker();
+      lastSearchResult = r;
+
+      searchMarker = L.marker([r.lat, r.lng], {
+        icon: L.divIcon({
+          className: 'search-marker',
+          html: '<div style="width:16px; height:16px;"></div>',
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        }),
+        zIndexOffset: 1000
+      }).addTo(map);
+
+      searchMarker.bindPopup(`
+        <div style="min-width: 170px;">
+          <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">${escapeHtml(r.label)}</div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">${escapeHtml(r.sub)}</div>
+          <button class="btn-primary" onclick="addSearchResultAsPoi()">
+            <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Añadir a mis puntos
+          </button>
+        </div>
+      `).openPopup();
+      lucide.createIcons();
+
+      // Encuadra ciudades y regiones; zoom cercano para lugares concretos
+      const span = r.bounds
+        ? Math.max(r.bounds[1][0] - r.bounds[0][0], r.bounds[1][1] - r.bounds[0][1])
+        : 0;
+      if (span > 0.02) {
+        map.fitBounds(r.bounds, { maxZoom: 17, padding: [60, 60] });
+      } else {
+        map.flyTo([r.lat, r.lng], 17, { duration: 0.8 });
+      }
+
+      hideSearchPanel();
+    }
+
+    function addSearchResultAsPoi() {
+      if (!lastSearchResult) return;
+      const { lat, lng, label } = lastSearchResult;
+      removeSearchMarker();
+      hideSearchPanel();
+      createPoiAt(lat, lng, label);
+    }
+
+    // Cerrar la lista de resultados al hacer clic fuera del buscador
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.map-search-wrap')) hideSearchPanel();
     });
 
     /* ==========================================================
@@ -1100,7 +1374,7 @@
     /* ==========================================================
        GESTIÓN DE POI (PAGE DRAWER)
     ========================================================== */
-    function createPoiAt(lat, lng) {
+    function createPoiAt(lat, lng, title) {
       // Siempre debe existir al menos una lista donde colocar el punto
       if (!state.lists.length) {
         state.lists.push({ id: Date.now().toString(), name: 'Mis lugares', icon: '📁' });
@@ -1109,7 +1383,7 @@
       const newPoi = {
         id: 'poi_' + Date.now(),
         listId: state.activeListId === 'all' ? state.lists[0].id : state.activeListId,
-        title: 'Nuevo Lugar',
+        title: title || 'Nuevo Lugar',
         icon: '📍',
         lat: lat,
         lng: lng,
