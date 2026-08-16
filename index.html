@@ -907,7 +907,10 @@
   <div id="notion-page-drawer">
     <div class="page-cover" id="drawer-cover">
       <div class="page-header-actions">
-        <button class="btn-icon" onclick="changeCoverImage()" title="Cambiar portada">
+        <button class="btn-icon" onclick="autoCoverForCurrentPoi()" title="Buscar una imagen del lugar">
+          <i data-lucide="image-plus" style="width: 16px; height: 16px;"></i>
+        </button>
+        <button class="btn-icon" onclick="changeCoverImage()" title="Cambiar portada (URL)">
           <i data-lucide="image" style="width: 16px; height: 16px;"></i>
         </button>
         <button class="btn-icon" onclick="deleteCurrentPoi()" title="Eliminar página" style="color: #eb5757;">
@@ -1099,6 +1102,8 @@
     let currentSelectedPoiId = null;
     let markersMap = {};
     let currentTileLayer = null;
+    let bordersCasingLayer = null;
+    let bordersLineLayer = null;
 
     // Compatibilidad con datos guardados antes (categoría eliminada, fecha añadida)
     function normalizeState(s) {
@@ -1173,6 +1178,48 @@
       }).addTo(map);
     }
 
+    /* ----------------------------------------------------------
+       FRONTERAS ENTRE PAÍSES
+       Las teselas de CartoDB dibujan las fronteras muy tenues. Se
+       superpone Natural Earth (50 m) en un panel propio: una línea
+       ancha y clara de fondo (casing) y otra fina y oscura encima,
+       para que el límite resalte sobre cualquier color de mapa.
+       El panel no captura clics, así que seguir pinchando el mapa
+       propone un lugar como siempre.
+    ---------------------------------------------------------- */
+    const BORDERS_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_0_boundary_lines_land.geojson';
+
+    map.createPane('borders');
+    map.getPane('borders').style.zIndex = 350;
+    map.getPane('borders').style.pointerEvents = 'none';
+
+    function bordersStyles(isDark) {
+      return {
+        casing: { color: isDark ? '#000000' : '#ffffff', weight: 4.5, opacity: isDark ? 0.45 : 0.7, lineJoin: 'round', lineCap: 'round' },
+        line:   { color: isDark ? '#b9c0c7' : '#5b6169', weight: 1.6, opacity: isDark ? 0.85 : 0.9, lineJoin: 'round', lineCap: 'round', dashArray: null }
+      };
+    }
+
+    function applyBordersStyle(isDark) {
+      const s = bordersStyles(isDark);
+      if (bordersCasingLayer) bordersCasingLayer.setStyle(s.casing);
+      if (bordersLineLayer) bordersLineLayer.setStyle(s.line);
+    }
+
+    function loadCountryBorders() {
+      fetch(BORDERS_URL)
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+        .then(geojson => {
+          const s = bordersStyles(state.darkMode);
+          const opts = { pane: 'borders', interactive: false };
+          bordersCasingLayer = L.geoJSON(geojson, { ...opts, style: s.casing }).addTo(map);
+          bordersLineLayer = L.geoJSON(geojson, { ...opts, style: s.line }).addTo(map);
+        })
+        .catch(err => console.warn('No se pudieron cargar las fronteras:', err));
+    }
+
+    loadCountryBorders();
+
     function toggleDarkMode() {
       state.darkMode = !state.darkMode;
       saveState();
@@ -1188,6 +1235,7 @@
         document.getElementById('theme-btn').innerHTML = `<i data-lucide="moon" style="width: 16px; height: 16px;"></i>`;
       }
       applyMapTileLayer(state.darkMode);
+      applyBordersStyle(state.darkMode);
       renderMapMarkers();
       lucide.createIcons();
     }
@@ -1416,6 +1464,110 @@
     });
 
     /* ==========================================================
+       PORTADAS AUTOMÁTICAS (WIKIPEDIA / WIKIMEDIA COMMONS)
+       Dos fuentes libres y sin clave de API:
+       1. El artículo de Wikipedia que coincide con el nombre, siempre
+          que esté geolocalizado cerca del punto (evita fotos de un
+          homónimo cualquiera cuando el sitio no tiene artículo).
+       2. Si no hay artículo, la foto de Commons más cercana al pin,
+          que es lo que salva a restaurantes y sitios pequeños.
+    ========================================================== */
+    const DEFAULT_COVER = 'https://images.unsplash.com/photo-1499856871958-5b9627545d1a?auto=format&fit=crop&w=600&q=80';
+    const WIKIS = ['fr', 'es'];
+    const MAX_ARTICLE_KM = 20;               // el artículo debe hablar de este sitio, no del pueblo de al lado
+    // Descarta mapas, escudos, esquemas y las fotos de satélite geoetiquetadas
+    // que Commons devuelve en zonas rurales (ISS052-E-79450, Landsat...)
+    const NOT_A_PHOTO = /(\.svgs?|\.tiff?|\.pdf)$|\b(logo|blason|coat[_ ]of[_ ]arms|carte|map|plan|diagram|schema|iss\d+|sts\d+|satellite|landsat|sentinel|astronaut|view of earth)\b/i;
+
+    function distanceKm(aLat, aLng, bLat, bLng) {
+      const R = 6371, toRad = d => d * Math.PI / 180;
+      const dLat = toRad(bLat - aLat), dLng = toRad(bLng - aLng);
+      const h = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLng / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    const byGeneratorIndex = (a, b) => (a.index ?? 99) - (b.index ?? 99);
+
+    async function apiPages(url) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Object.values((data.query || {}).pages || {});
+      } catch (err) {
+        return []; // sin conexión o servicio caído: se conserva la portada actual
+      }
+    }
+
+    async function imageFromWikipedia(title, lat, lng) {
+      for (const wiki of WIKIS) {
+        const url = `https://${wiki}.wikipedia.org/w/api.php?action=query&format=json&origin=*`
+          + '&generator=search&gsrlimit=3&prop=pageimages%7Ccoordinates'
+          + '&piprop=thumbnail&pithumbsize=1000&gsrsearch=' + encodeURIComponent(title);
+
+        const hit = (await apiPages(url))
+          .filter(p => p.thumbnail && p.coordinates && p.coordinates.length)
+          .filter(p => distanceKm(lat, lng, p.coordinates[0].lat, p.coordinates[0].lon) < MAX_ARTICLE_KM)
+          .sort(byGeneratorIndex)[0];
+
+        if (hit) return hit.thumbnail.source;
+      }
+      return null;
+    }
+
+    async function imageFromCommons(lat, lng) {
+      for (const radius of [400, 2000]) {
+        const url = 'https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*'
+          + '&generator=geosearch&ggsnamespace=6&ggslimit=10&ggsradius=' + radius
+          + `&ggscoord=${lat}%7C${lng}`
+          + '&prop=imageinfo&iiprop=url&iiurlwidth=1000';
+
+        const hit = (await apiPages(url))
+          .filter(p => p.imageinfo && p.imageinfo[0] && p.imageinfo[0].thumburl)
+          .filter(p => !NOT_A_PHOTO.test(p.title))
+          .sort(byGeneratorIndex)[0];
+
+        if (hit) return hit.imageinfo[0].thumburl;
+      }
+      return null;
+    }
+
+    async function findPlaceImage(title, lat, lng) {
+      const named = title && title !== 'Nuevo Lugar' ? await imageFromWikipedia(title, lat, lng) : null;
+      return named || imageFromCommons(lat, lng);
+    }
+
+    // Busca y aplica la portada. El punto puede haber cambiado mientras
+    // tanto (borrado, o recargado desde la nube), así que se rebusca por id.
+    async function autoCoverForPoi(id, notify) {
+      const start = state.pois.find(p => p.id === id);
+      if (!start) return;
+
+      const url = await findPlaceImage(start.title, start.lat, start.lng);
+      const poi = state.pois.find(p => p.id === id);
+      if (!poi) return;
+
+      if (!url) {
+        if (notify) showToast('No he encontrado ninguna imagen de este lugar', true);
+        return;
+      }
+
+      poi.cover = url;
+      saveState();
+      if (currentSelectedPoiId === id) {
+        document.getElementById('drawer-cover').style.backgroundImage = `url('${url}')`;
+      }
+      if (notify) showToast('Portada encontrada');
+    }
+
+    function autoCoverForCurrentPoi() {
+      if (!currentSelectedPoiId) return;
+      showToast('Buscando una imagen del lugar...');
+      autoCoverForPoi(currentSelectedPoiId, true);
+    }
+
+    /* ==========================================================
        SIDEBAR & RESPONSIVE TOGGLES
     ========================================================== */
     function toggleSidebar(open) {
@@ -1579,7 +1731,7 @@
         lng: lng,
         status: 'Por Visitar',
         date: '',
-        cover: 'https://images.unsplash.com/photo-1499856871958-5b9627545d1a?auto=format&fit=crop&w=600&q=80',
+        cover: DEFAULT_COVER,
         notes: '',
         todos: []
       };
@@ -1589,6 +1741,7 @@
       renderSidebar();
       renderMapMarkers();
       openPoiDrawer(newPoi.id);
+      autoCoverForPoi(newPoi.id); // la portada real llega unos segundos después
     }
 
     function openPoiDrawer(id) {
