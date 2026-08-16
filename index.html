@@ -887,6 +887,7 @@
         <i data-lucide="search" style="width: 15px; height: 15px; color: var(--text-muted); flex-shrink: 0;"></i>
         <input type="search" id="search-input" autocomplete="off"
                placeholder="Buscar un lugar. Ej. Restaurant Bambino, Milán"
+               onfocus="this.value = ''; hideSearchPanel();"
                onkeydown="if (event.key === 'Escape') clearPlaceSearch()">
         <button type="submit" class="btn-icon" id="search-btn" title="Buscar" aria-label="Buscar">
           <i data-lucide="arrow-right" style="width: 15px; height: 15px;"></i>
@@ -896,7 +897,7 @@
     </div>
 
     <div class="map-banner">
-      <span><i data-lucide="mouse-pointer" style="width: 13px; height: 13px; display:inline; vertical-align: middle;"></i> Clic en el mapa para colocar un punto</span>
+      <span><i data-lucide="mouse-pointer" style="width: 13px; height: 13px; display:inline; vertical-align: middle;"></i> Clic en el mapa para proponer un punto</span>
     </div>
 
     <div id="map"></div>
@@ -1192,12 +1193,12 @@
     }
 
     map.on('click', (e) => {
-      // Si hay un resultado de búsqueda abierto, el primer clic sólo lo descarta
+      // Si hay un punto propuesto abierto, el primer clic sólo lo descarta
       if (searchMarker && searchMarker.isPopupOpen()) {
         removeSearchMarker();
         return;
       }
-      createPoiAt(e.latlng.lat, e.latlng.lng);
+      proposePlaceAt(e.latlng.lat, e.latlng.lng);
     });
 
     /* ==========================================================
@@ -1233,6 +1234,72 @@
         searchMarker = null;
       }
       lastSearchResult = null;
+      pendingReverseToken++; // descarta una geocodificación inversa en curso
+    }
+
+    /* ---------- Punto propuesto: pin temporal + botón para añadirlo ---------- */
+
+    // Un resultado es { lat, lng, label, sub, bounds }
+    function placePopupHtml(r) {
+      return `
+        <div style="min-width: 170px;">
+          <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">${escapeHtml(r.label)}</div>
+          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">${escapeHtml(r.sub)}</div>
+          <button class="btn-primary" onclick="addSearchResultAsPoi()">
+            <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Añadir a mis puntos
+          </button>
+        </div>`;
+    }
+
+    function showPlaceMarker(r) {
+      removeSearchMarker();
+      lastSearchResult = r;
+
+      searchMarker = L.marker([r.lat, r.lng], {
+        icon: L.divIcon({
+          className: 'search-marker',
+          html: '<div style="width:16px; height:16px;"></div>',
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        }),
+        zIndexOffset: 1000
+      }).addTo(map);
+
+      searchMarker.bindPopup(placePopupHtml(r)).openPopup();
+      lucide.createIcons();
+    }
+
+    // Clic en el mapa: propone el punto sin crearlo; el nombre se rellena
+    // por geocodificación inversa mientras el globo ya está en pantalla
+    let pendingReverseToken = 0;
+
+    async function proposePlaceAt(lat, lng) {
+      const coords = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      showPlaceMarker({ lat, lng, label: 'Nuevo lugar', sub: coords, bounds: null });
+
+      const token = ++pendingReverseToken;
+      const name = await reverseGeocode(lat, lng);
+      if (!name || !searchMarker || token !== pendingReverseToken) return;
+
+      lastSearchResult = { lat, lng, label: name, sub: coords, bounds: null };
+      searchMarker.setPopupContent(placePopupHtml(lastSearchResult));
+      lucide.createIcons();
+    }
+
+    // Devuelve un nombre aproximado del lugar más cercano, o null si no hay nada
+    async function reverseGeocode(lat, lng) {
+      try {
+        const res = await fetch(`https://photon.komoot.io/reverse?limit=1&lat=${lat}&lon=${lng}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const f = (data.features || [])[0];
+        if (!f) return null;
+        const p = f.properties;
+        const street = [p.street, p.housenumber].filter(Boolean).join(' ');
+        return p.name || street || p.city || p.county || p.state || null;
+      } catch (err) {
+        return null; // sin conexión o servicio caído: se queda "Nuevo lugar"
+      }
     }
 
     async function runPlaceSearch() {
@@ -1320,29 +1387,7 @@
       const r = searchResults[index];
       if (!r) return;
 
-      removeSearchMarker();
-      lastSearchResult = r;
-
-      searchMarker = L.marker([r.lat, r.lng], {
-        icon: L.divIcon({
-          className: 'search-marker',
-          html: '<div style="width:16px; height:16px;"></div>',
-          iconSize: [16, 16],
-          iconAnchor: [8, 8]
-        }),
-        zIndexOffset: 1000
-      }).addTo(map);
-
-      searchMarker.bindPopup(`
-        <div style="min-width: 170px;">
-          <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">${escapeHtml(r.label)}</div>
-          <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">${escapeHtml(r.sub)}</div>
-          <button class="btn-primary" onclick="addSearchResultAsPoi()">
-            <i data-lucide="plus" style="width: 14px; height: 14px;"></i> Añadir a mis puntos
-          </button>
-        </div>
-      `).openPopup();
-      lucide.createIcons();
+      showPlaceMarker(r);
 
       // Encuadra ciudades y regiones; zoom cercano para lugares concretos
       const span = r.bounds
