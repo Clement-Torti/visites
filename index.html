@@ -965,9 +965,16 @@
     // Compatibilidad con datos guardados antes (categoría eliminada, fecha añadida)
     function normalizeState(s) {
       s.hideVisited = !!s.hideVisited;
-      s.lists = s.lists || [];
+      // Los id viajan a Sheets, que los convierte en números: se fuerzan a texto
+      s.activeListId = String(s.activeListId || 'all');
+      s.lists = (s.lists || []).map(l => {
+        l.id = String(l.id);
+        return l;
+      });
       s.pois = (s.pois || []).map(p => {
         delete p.tag;
+        p.id = String(p.id);
+        p.listId = String(p.listId);
         if (typeof p.date !== 'string') p.date = '';
         return p;
       });
@@ -1711,6 +1718,10 @@ function json_(obj) {
       }
     }
 
+    // La hoja de cálculo es la fuente de verdad; localStorage sólo es una caché local
+    let pullInFlight = false;
+    let lastPullAt = 0;
+
     async function pullFromSheet() {
       const url = getSyncUrl();
       if (!url) return;
@@ -1720,9 +1731,7 @@ function json_(obj) {
       updateSyncIndicator('busy');
       setSyncStatus('Cargando desde la hoja de cálculo...');
       try {
-        const res = await fetch(url, { method: 'GET' });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const data = await res.json();
+        const data = await fetchSheet(url);
         applyImportedData(data);
         markSynced();
         setSyncStatus('Datos cargados desde Google Sheets.');
@@ -1733,19 +1742,80 @@ function json_(obj) {
       }
     }
 
-    function applyImportedData(data) {
+    async function fetchSheet(url) {
+      // cache-buster: evita que el navegador sirva una respuesta antigua de Apps Script
+      const res = await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now(), { method: 'GET' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }
+
+    // Refresco silencioso: al abrir la página y al volver a ella
+    async function autoPull() {
+      const url = localStorage.getItem(SYNC_URL_KEY);
+      if (!url) return;
+      if (pullInFlight) return;
+      if (Date.now() - lastPullAt < 5000) return;
+      // Sin snapshot previo (navegador nuevo) manda la nube, salvo que ya haya datos locales
+      if (!localStorage.getItem(SNAPSHOT_KEY)) {
+        if (localStorage.getItem(STORAGE_KEY)) return;
+      } else if (hasUnsyncedChanges()) {
+        // Con cambios locales pendientes no pisamos nada: primero ⌘S
+        return;
+      }
+
+      pullInFlight = true;
+      updateSyncIndicator('busy');
+      try {
+        const data = await fetchSheet(url);
+        const changed = applyImportedData(data, { preserveUi: true });
+        lastPullAt = Date.now();
+        markSynced();
+        if (changed) showToast('Datos actualizados desde la nube');
+      } catch (err) {
+        updateSyncIndicator('error');
+        setSyncStatus('Error al cargar de la nube: ' + err.message, true);
+      } finally {
+        pullInFlight = false;
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') autoPull();
+    });
+    window.addEventListener('focus', autoPull);
+
+    // Devuelve true si los datos de la nube difieren de los que había en pantalla
+    function applyImportedData(data, opts) {
+      opts = opts || {};
       if (!data || !Array.isArray(data.pois) || !Array.isArray(data.lists)) {
         throw new Error('formato de datos no válido');
       }
+      const before = syncSnapshot();
       state.lists = data.lists;
       state.pois = data.pois;
-      state.activeListId = 'all';
       normalizeState(state);
-      currentSelectedPoiId = null;
-      closeDrawer();
+      const changed = syncSnapshot() !== before;
+
+      if (opts.preserveUi) {
+        // Mantiene la lista activa y el punto abierto si siguen existiendo
+        if (state.activeListId !== 'all' && !state.lists.some(l => l.id === state.activeListId)) {
+          state.activeListId = 'all';
+        }
+        if (currentSelectedPoiId && !state.pois.some(p => p.id === currentSelectedPoiId)) {
+          closeDrawer();
+        }
+      } else {
+        state.activeListId = 'all';
+        closeDrawer();
+      }
+
       saveState();
-      renderSidebar();
-      renderMapMarkers();
+      if (changed || !opts.preserveUi) {
+        renderSidebar();
+        renderMapMarkers();
+        if (currentSelectedPoiId) openPoiDrawer(currentSelectedPoiId);
+      }
+      return changed;
     }
 
     function exportJson() {
@@ -1777,10 +1847,11 @@ function json_(obj) {
       reader.readAsText(file);
     }
 
-    // Inicialización
+    // Inicialización: pinta la caché local al instante y luego refresca desde la nube
     applyTheme();
     renderSidebar();
     updateSyncIndicator();
+    autoPull();
   </script>
 </body>
 </html>
