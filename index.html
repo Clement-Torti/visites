@@ -1136,6 +1136,16 @@
       return poi.status === 'Visitado';
     }
 
+    // Emoji con el que se pinta un punto: el suyo si se le ha elegido uno
+    // a mano, y si no el de su lista, para que los pines se lean por grupos.
+    // El 📍 antiguo cuenta como "sin elegir" (los puntos ya guardados lo llevan).
+    const DEFAULT_POI_ICON = '📍';
+    function poiIcon(poi) {
+      if (poi.icon && poi.icon !== DEFAULT_POI_ICON) return poi.icon;
+      const list = state.lists.find(l => l.id === poi.listId);
+      return (list && list.icon) || DEFAULT_POI_ICON;
+    }
+
     // Puntos visibles según la lista activa y el filtro de visitados
     function getVisiblePois() {
       return state.pois.filter(p => {
@@ -1626,7 +1636,7 @@
         poiListContainer.innerHTML += `
           <div class="nav-item ${currentSelectedPoiId === p.id ? 'active' : ''}" onclick="openPoiDrawer('${p.id}'); toggleSidebar(false);">
             <div class="nav-item-left">
-              <span>${escapeHtml(p.icon || '📍')}</span>
+              <span>${escapeHtml(poiIcon(p))}</span>
               <span>${escapeHtml(p.title || 'Sin título')}</span>
             </div>
             <div class="nav-item-left" style="gap: 6px;">
@@ -1656,7 +1666,7 @@
       filteredPois.forEach(poi => {
         const customIcon = L.divIcon({
           className: 'custom-marker' + (isVisited(poi) ? ' visited' : ''),
-          html: `<div style="width:34px; height:34px; display:flex; align-items:center; justify-content:center;">${escapeHtml(poi.icon || '📍')}</div>`,
+          html: `<div style="width:34px; height:34px; display:flex; align-items:center; justify-content:center;">${escapeHtml(poiIcon(poi))}</div>`,
           iconSize: [34, 34],
           iconAnchor: [17, 17]
         });
@@ -1727,7 +1737,7 @@
         id: 'poi_' + Date.now(),
         listId: state.activeListId === 'all' ? state.lists[0].id : state.activeListId,
         title: title || 'Nuevo Lugar',
-        icon: '📍',
+        icon: '',   // vacío = hereda el emoji de su lista
         lat: lat,
         lng: lng,
         status: 'Por Visitar',
@@ -1752,7 +1762,7 @@
       currentSelectedPoiId = id;
 
       document.getElementById('drawer-title').value = poi.title;
-      document.getElementById('drawer-icon').innerText = poi.icon || '📍';
+      document.getElementById('drawer-icon').innerText = poiIcon(poi);
       document.getElementById('drawer-cover').style.backgroundImage = `url('${poi.cover || ''}')`;
       document.getElementById('drawer-status').value = poi.status || 'Por Visitar';
       document.getElementById('drawer-date').value = poi.date || '';
@@ -1786,17 +1796,21 @@
 
       poi[field] = value;
       saveState();
+      // El emoji puede venir heredado de la lista: al cambiar de lista, refréscalo
+      if (field === 'listId' || field === 'icon') {
+        document.getElementById('drawer-icon').innerText = poiIcon(poi);
+      }
       renderSidebar();
       renderMapMarkers();
     }
 
     function changeEmoji() {
       const current = state.pois.find(p => p.id === currentSelectedPoiId);
-      const newIcon = prompt('Introduce un emoji representativo:', current?.icon || '📍');
-      if (newIcon) {
-        document.getElementById('drawer-icon').innerText = newIcon;
-        updatePoiField('icon', newIcon);
-      }
+      if (!current) return;
+      // Dejarlo en blanco devuelve el punto al emoji de su lista
+      const newIcon = prompt('Emoji del punto (vacío = el de su lista):', current.icon || '');
+      if (newIcon === null) return;
+      updatePoiField('icon', newIcon.trim());
     }
 
     function changeCoverImage() {
@@ -1950,7 +1964,7 @@
         const chips = (byDate[key] || []).map(p => `
           <button class="cal-chip ${statusClass(p)}" onclick="openPoiFromCalendar('${p.id}')"
                   title="${escapeHtml(p.title)} — ${escapeHtml(p.status || '')}">
-            <span>${escapeHtml(p.icon || '📍')}</span>
+            <span>${escapeHtml(poiIcon(p))}</span>
             <span class="label">${escapeHtml(p.title)}</span>
           </button>`).join('');
 
@@ -1975,7 +1989,7 @@
         : monthPois.map(p => `
             <button class="cal-agenda-row" onclick="openPoiFromCalendar('${p.id}')">
               <span class="cal-agenda-date">${formatAgendaDate(p.date)}</span>
-              <span>${escapeHtml(p.icon || '📍')}</span>
+              <span>${escapeHtml(poiIcon(p))}</span>
               <span class="cal-agenda-title">${escapeHtml(p.title)}</span>
               <span class="cal-agenda-status">${escapeHtml(p.status || '')}</span>
             </button>`).join('');
