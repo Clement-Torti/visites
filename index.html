@@ -1129,6 +1129,7 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       updateSyncIndicator();
       refreshCalendarIfOpen();
+      scheduleAutoPush();
     }
 
     function isVisited(poi) {
@@ -2164,31 +2165,66 @@ function json_(obj) {
       }
     });
 
-    async function pushToSheet() {
+    async function pushToSheet(opts) {
+      opts = opts || {};
       const url = getSyncUrl(true);
       if (!url) {
+        if (opts.silent) return;
         openSyncModal();
         setSyncStatus('Introduce primero la URL del Web App.', true);
         return;
       }
 
       updateSyncIndicator('busy');
-      setSyncStatus('Guardando en la hoja de cálculo...');
+      setSyncStatus(opts.silent ? 'Guardando cambios...' : 'Guardando en la hoja de cálculo...');
+      // El estado que se envía, para no marcar como sincronizados
+      // los cambios hechos mientras la petición estaba en vuelo
+      const sent = syncSnapshot();
       try {
         // text/plain evita la petición preflight que Apps Script no responde
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ lists: state.lists, pois: state.pois })
+          body: sent
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        markSynced();
+        localStorage.setItem(SNAPSHOT_KEY, sent);
+        updateSyncIndicator();
         setSyncStatus('Guardado correctamente en Google Sheets.');
-        showToast('Guardado en la nube');
+        if (!opts.silent) showToast('Guardado en la nube');
       } catch (err) {
         updateSyncIndicator('error');
         setSyncStatus('Error al guardar: ' + err.message, true);
         showToast('Error al guardar: ' + err.message, true);
+      }
+    }
+
+    /* ---------- Guardado automático en la nube ----------
+       En el móvil no hay ⌘S: sin esto, la portada (o cualquier
+       otro cambio) se quedaba sólo en el localStorage del aparato. */
+    const AUTO_PUSH_DELAY = 1500;
+    let autoPushTimer = null;
+
+    function scheduleAutoPush() {
+      if (!localStorage.getItem(SYNC_URL_KEY)) return;
+      clearTimeout(autoPushTimer);
+      autoPushTimer = setTimeout(() => {
+        autoPushTimer = null;
+        if (hasUnsyncedChanges()) pushToSheet({ silent: true });
+      }, AUTO_PUSH_DELAY);
+    }
+
+    // Al ocultar la pestaña (cambiar de app en el móvil) no da tiempo a
+    // un fetch normal: sendBeacon entrega el cuerpo aunque la página muera.
+    function flushAutoPush() {
+      clearTimeout(autoPushTimer);
+      autoPushTimer = null;
+      const url = localStorage.getItem(SYNC_URL_KEY);
+      if (!url || !hasUnsyncedChanges()) return;
+      const body = syncSnapshot();
+      const blob = new Blob([body], { type: 'text/plain;charset=utf-8' });
+      if (navigator.sendBeacon && navigator.sendBeacon(url, blob)) {
+        localStorage.setItem(SNAPSHOT_KEY, body);
       }
     }
 
@@ -2254,8 +2290,14 @@ function json_(obj) {
     }
 
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') autoPull();
+      if (document.visibilityState === 'hidden') {
+        flushAutoPush();
+      } else {
+        scheduleAutoPush();  // por si el beacon anterior no llegó a salir
+        autoPull();          // no pisa nada: se salta si quedan cambios locales
+      }
     });
+    window.addEventListener('pagehide', flushAutoPush);
     window.addEventListener('focus', autoPull);
 
     // Devuelve true si los datos de la nube difieren de los que había en pantalla
@@ -2325,6 +2367,7 @@ function json_(obj) {
     applyTheme();
     renderSidebar();
     updateSyncIndicator();
+    scheduleAutoPush();  // sube lo que quedara pendiente de una sesión anterior
     autoPull();
   </script>
 </body>
