@@ -651,6 +651,7 @@
     #sync-btn.sync-ok, #sync-btn.sync-ok:hover { color: var(--green); }
     #sync-btn.sync-dirty, #sync-btn.sync-dirty:hover { color: #e9a23b; }
     #sync-btn.sync-error, #sync-btn.sync-error:hover { color: #eb5757; }
+    #sync-btn.sync-conflict, #sync-btn.sync-conflict:hover { color: #eb5757; }
     #sync-btn.sync-busy { color: var(--accent); }
     #sync-btn.sync-busy svg { animation: spin 0.9s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -1027,6 +1028,10 @@
           En tu Hoja de Cálculo: <b>Extensiones → Apps Script</b>, pega este código, luego
           <b>Implementar → Nueva implementación → Aplicación web</b>, ejecutar como <i>tú mismo</i>
           y acceso <i>Cualquier persona</i>. Copia la URL <code>/exec</code> arriba.
+          <br><b>Importante:</b> esta versión añade las protecciones contra borrados (control de
+          versión, bloqueo de recortes masivos y copia en la pestaña <code>_history</code>).
+          Si ya tenías el script antiguo, sustitúyelo y vuelve a implementar
+          (<b>Implementar → Gestionar implementaciones → editar → Versión: nueva</b>) para conservar la misma URL.
         </p>
         <textarea readonly id="apps-script-code"></textarea>
       </details>
@@ -1045,6 +1050,9 @@
        ESTADO Y PERSISTENCIA (LOCALSTORAGE)
     ========================================================== */
     const STORAGE_KEY = 'geonotion_state_v2';
+    const SYNC_URL_KEY = 'geonotion_sync_url';
+    const SNAPSHOT_KEY = 'geonotion_synced_snapshot';
+    const REV_KEY = 'geonotion_synced_rev';
     
     let defaultState = {
       darkMode: false,
@@ -1098,7 +1106,14 @@
       ]
     };
 
-    let state = JSON.parse(localStorage.getItem(STORAGE_KEY)) || defaultState;
+    // Con la nube configurada, un navegador sin datos locales arranca VACÍO y espera
+    // al pull. Sembrar aquí los ejemplos era lo que permitía que un aparato con el
+    // localStorage borrado subiera "Torre Eiffel" y compañía encima de los datos reales.
+    const storedState = localStorage.getItem(STORAGE_KEY);
+    const emptyState = { darkMode: false, activeListId: 'all', hideVisited: false, lists: [], pois: [] };
+    let state = storedState
+      ? JSON.parse(storedState)
+      : (localStorage.getItem(SYNC_URL_KEY) ? emptyState : defaultState);
     let currentSelectedPoiId = null;
     let markersMap = {};
     let currentTileLayer = null;
@@ -1112,6 +1127,9 @@
       s.activeListId = String(s.activeListId || 'all');
       s.lists = (s.lists || []).map(l => {
         l.id = String(l.id);
+        ['name', 'icon'].forEach(k => {
+          if (typeof l[k] !== 'string') l[k] = (l[k] === undefined || l[k] === null) ? '' : String(l[k]);
+        });
         return l;
       });
       s.pois = (s.pois || []).map(p => {
@@ -1119,6 +1137,14 @@
         p.id = String(p.id);
         p.listId = String(p.listId);
         if (typeof p.date !== 'string') p.date = '';
+        // La hoja devuelve '' donde aquí puede no haber campo: sin igualar la forma,
+        // comparar lo local con lo de la nube da diferencias que no existen.
+        ['title', 'icon', 'status', 'cover', 'notes'].forEach(k => {
+          if (typeof p[k] !== 'string') p[k] = (p[k] === undefined || p[k] === null) ? '' : String(p[k]);
+        });
+        p.lat = Number(p.lat);
+        p.lng = Number(p.lng);
+        if (!Array.isArray(p.todos)) p.todos = [];
         return p;
       });
       return s;
@@ -2025,24 +2051,77 @@
        Sin backend propio: la app es estática (GitHub Pages) y los
        datos viven en localStorage + una hoja de cálculo de Google.
     ========================================================== */
-    const SYNC_URL_KEY = 'geonotion_sync_url';
-    const SNAPSHOT_KEY = 'geonotion_synced_snapshot';
-
     const APPS_SCRIPT_CODE = `/** Visites - Backend en Google Sheets */
 const LISTS_SHEET = 'lists';
 const POIS_SHEET  = 'pois';
+const HISTORY_SHEET = '_history';
+const HISTORY_MAX = 60;
 const LIST_COLS = ['id', 'name', 'icon'];
 const POI_COLS  = ['id', 'listId', 'title', 'icon', 'lat', 'lng', 'status', 'date', 'cover', 'notes', 'todos'];
 
 function doGet() {
-  return json_({ lists: read_(LISTS_SHEET, LIST_COLS), pois: read_(POIS_SHEET, POI_COLS) });
+  return json_({
+    rev: getRev_(),
+    lists: read_(LISTS_SHEET, LIST_COLS),
+    pois: read_(POIS_SHEET, POI_COLS)
+  });
 }
 
 function doPost(e) {
-  var data = JSON.parse(e.postData.contents);
-  write_(LISTS_SHEET, LIST_COLS, data.lists || []);
-  write_(POIS_SHEET, POI_COLS, data.pois || []);
-  return json_({ ok: true });
+  var lock = LockService.getScriptLock();
+  // Dos aparatos guardando a la vez ya no se pisan a medio escribir
+  if (!lock.tryLock(20000)) return json_({ error: 'busy' });
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var rev = getRev_();
+
+    // 1. Escritura obsoleta: quien envía no había leido el último cambio de otro
+    if (data.baseRev !== undefined && Number(data.baseRev) !== rev && !data.force) {
+      return json_({ error: 'stale', rev: rev });
+    }
+
+    var oldLists = read_(LISTS_SHEET, LIST_COLS);
+    var oldPois  = read_(POIS_SHEET, POI_COLS);
+    var newPois  = data.pois || [];
+
+    // 2. Guardia antiborrado: un recorte a la mitad o menos casi nunca es
+    //    intencionado, y vaciar la hoja del todo jamás se hace sin confirmar
+    if (!data.force && oldPois.length >= 3 &&
+        (newPois.length === 0 || newPois.length <= oldPois.length / 2)) {
+      return json_({ error: 'destructive', rev: rev, had: oldPois.length, got: newPois.length });
+    }
+
+    // 3. Copia del estado anterior antes de tocar nada
+    backup_(oldLists, oldPois, rev);
+
+    write_(LISTS_SHEET, LIST_COLS, data.lists || []);
+    write_(POIS_SHEET, POI_COLS, newPois);
+    return json_({ ok: true, rev: setRev_(rev + 1) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getRev_() {
+  return Number(PropertiesService.getScriptProperties().getProperty('rev') || 0);
+}
+
+function setRev_(v) {
+  PropertiesService.getScriptProperties().setProperty('rev', String(v));
+  return v;
+}
+
+// Cada guardado deja el estado anterior en _history; las 60 últimas versiones
+function backup_(lists, pois, rev) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(HISTORY_SHEET);
+  if (!sh) { sh = ss.insertSheet(HISTORY_SHEET); sh.appendRow(['cuando', 'rev', 'lugares', 'json']); }
+  var dump = JSON.stringify({ lists: lists, pois: pois });
+  if (dump.length > 45000) dump = '(demasiado grande: usa el historial de versiones de la hoja)';
+  sh.insertRowAfter(1);
+  sh.getRange(2, 1, 1, 4).setValues([[new Date(), rev, pois.length, dump]]);
+  var extra = sh.getLastRow() - 1 - HISTORY_MAX;
+  if (extra > 0) sh.deleteRows(HISTORY_MAX + 2, extra);
 }
 
 function read_(name, cols) {
@@ -2119,9 +2198,59 @@ function json_(obj) {
 
     /* ---------- Estado de sincronización (icono nube + ⌘S) ---------- */
 
+    // Serialización estable: mismas claves en el mismo orden vengan de donde vengan.
+    // El orden de los arrays (lists, pois, todos) sí es dato y se respeta.
+    function canonical(value) {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === 'object') {
+        return Object.keys(value).sort().reduce((o, k) => { o[k] = canonical(value[k]); return o; }, {});
+      }
+      return value;
+    }
+
     // Sólo lists y pois viajan a la nube; el tema o el filtro son locales
     function syncSnapshot() {
-      return JSON.stringify({ lists: state.lists, pois: state.pois });
+      return JSON.stringify(canonical({ lists: state.lists, pois: state.pois }));
+    }
+
+    // Mismo formato que syncSnapshot() pero para datos recién bajados, normalizados
+    // igual que los locales: si no, cualquier comparación local/nube da falso positivo.
+    function snapshotOf(lists, pois) {
+      const clone = normalizeState({
+        lists: JSON.parse(JSON.stringify(lists || [])),
+        pois: JSON.parse(JSON.stringify(pois || []))
+      });
+      return JSON.stringify(canonical({ lists: clone.lists, pois: clone.pois }));
+    }
+
+    const EMPTY_SNAPSHOT = JSON.stringify(canonical({ lists: [], pois: [] }));
+
+    // Las versiones anteriores guardaban el snapshot sin canonizar. Se migra al arrancar:
+    // si no, la primera comparación lo tomaría por un cambio local y avisaría de un
+    // conflicto que no existe.
+    (function migrateSnapshot() {
+      const raw = localStorage.getItem(SNAPSHOT_KEY);
+      if (!raw) return;
+      try {
+        const old = JSON.parse(raw);
+        const migrated = snapshotOf(old.lists, old.pois);
+        if (migrated !== raw) localStorage.setItem(SNAPSHOT_KEY, migrated);
+      } catch (err) {
+        localStorage.removeItem(SNAPSHOT_KEY);  // ilegible: mejor tratarlo como "sin base"
+      }
+    })();
+
+    /* Nada sube solo hasta que esta sesión haya leído la nube al menos una vez.
+       Sin esta puerta, un arranque con datos incompletos (localStorage borrado por
+       Safari, pull fallido, pestaña nueva) se propagaba a la hoja 1,5 s después y
+       la dejaba con los tres lugares de ejemplo. */
+    let cloudRead = false;
+    let conflictPending = false;
+    let cloudRev = Number(localStorage.getItem(REV_KEY) || 0);
+
+    function setCloudRev(rev) {
+      cloudRev = Number(rev || 0);
+      localStorage.setItem(REV_KEY, String(cloudRev));
     }
 
     function markSynced() {
@@ -2141,16 +2270,18 @@ function json_(obj) {
       let mode = forced;
       if (!mode) {
         if (!localStorage.getItem(SYNC_URL_KEY)) mode = 'off';
+        else if (conflictPending) mode = 'conflict';
         else mode = hasUnsyncedChanges() ? 'dirty' : 'ok';
       }
 
-      const icons = { off: 'cloud', dirty: 'cloud-upload', ok: 'cloud', busy: 'refresh-cw', error: 'cloud-off' };
+      const icons = { off: 'cloud', dirty: 'cloud-upload', ok: 'cloud', busy: 'refresh-cw', error: 'cloud-off', conflict: 'cloud-off' };
       const titles = {
         off: 'Datos y sincronización (sin configurar)',
         dirty: 'Cambios sin guardar en la nube — ⌘S para guardar',
         ok: 'Todo guardado en la nube',
         busy: 'Guardando...',
-        error: 'Error de sincronización'
+        error: 'Error de sincronización',
+        conflict: 'Conflicto: hay cambios aquí y en la nube — abre Datos y elige'
       };
 
       btn.className = 'btn-icon sync-' + mode;
@@ -2189,19 +2320,76 @@ function json_(obj) {
         return;
       }
 
+      // Subida manual sin haber leído la nube en esta sesión: se compara antes de
+      // pisar nada. Es el caso del aparato recién borrado, o del clic en "Guardar"
+      // cuando lo que se quería era "Cargar".
+      if (!cloudRead && !opts.silent) {
+        let remote = null;
+        try { remote = await fetchSheet(url); } catch (err) { /* sin red: se avisa abajo */ }
+        if (remote && Array.isArray(remote.pois)) {
+          setCloudRev(remote.rev);
+          if (snapshotOf(remote.lists, remote.pois) !== syncSnapshot() && remote.pois.length > state.pois.length) {
+            const msg = 'La hoja tiene ' + remote.pois.length + ' lugares y este aparato sólo ' +
+              state.pois.length + '.\n\nGuardar borrará los ' + (remote.pois.length - state.pois.length) +
+              ' que faltan aquí. Si lo que querías era traerlos, usa "Cargar de la nube".\n\n¿Sobrescribir la nube igualmente?';
+            if (!confirm(msg)) {
+              setSyncStatus('Guardado cancelado.', true);
+              updateSyncIndicator();
+              return;
+            }
+          }
+        } else if (!remote) {
+          setSyncStatus('No se ha podido leer la hoja para comparar. Inténtalo con red.', true);
+          updateSyncIndicator('error');
+          return;
+        }
+        cloudRead = true;
+      }
+
       updateSyncIndicator('busy');
       setSyncStatus(opts.silent ? 'Guardando cambios...' : 'Guardando en la hoja de cálculo...');
       // El estado que se envía, para no marcar como sincronizados
       // los cambios hechos mientras la petición estaba en vuelo
       const sent = syncSnapshot();
       try {
+        const body = pushBody(opts.force);
         // text/plain evita la petición preflight que Apps Script no responde
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: sent
+          body: body
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
+
+        // El Apps Script no puede devolver códigos de error HTTP: los manda en el JSON
+        let out = null;
+        try { out = await res.json(); } catch (err) { /* despliegue antiguo: sin cuerpo útil */ }
+
+        if (out && out.error === 'stale') {
+          // Otro aparato ha escrito desde la última lectura: no se pisa a ciegas
+          conflictPending = true;
+          cloudRead = false;
+          setCloudRev(out.rev);
+          updateSyncIndicator();
+          setSyncStatus('Otro dispositivo ha guardado cambios más nuevos. Usa "Cargar de la nube" o vuelve a intentarlo.', true);
+          showToast('La nube tiene cambios más nuevos', true);
+          autoPull();
+          return;
+        }
+        if (out && out.error === 'destructive') {
+          setCloudRev(out.rev);
+          updateSyncIndicator();
+          const msg = 'La hoja tiene ' + out.had + ' lugares y se iban a dejar ' + out.got +
+            '. El servidor lo ha bloqueado por seguridad.\n\n¿Confirmas que quieres borrarlos?';
+          if (!opts.silent && confirm(msg)) return pushToSheet({ force: true });
+          setSyncStatus('Guardado bloqueado: eliminaría ' + (out.had - out.got) + ' lugares.', true);
+          showToast('Guardado bloqueado por seguridad', true);
+          return;
+        }
+        if (out && out.rev !== undefined) setCloudRev(out.rev);
+
+        conflictPending = false;
+        cloudRead = true;
         localStorage.setItem(SNAPSHOT_KEY, sent);
         updateSyncIndicator();
         setSyncStatus('Guardado correctamente en Google Sheets.');
@@ -2213,6 +2401,13 @@ function json_(obj) {
       }
     }
 
+    // baseRev deja que el servidor rechace una escritura basada en datos viejos
+    function pushBody(force) {
+      const payload = { lists: state.lists, pois: state.pois, baseRev: cloudRev };
+      if (force) payload.force = true;
+      return JSON.stringify(payload);
+    }
+
     /* ---------- Guardado automático en la nube ----------
        En el móvil no hay ⌘S: sin esto, la portada (o cualquier
        otro cambio) se quedaba sólo en el localStorage del aparato. */
@@ -2221,6 +2416,9 @@ function json_(obj) {
 
     function scheduleAutoPush() {
       if (!localStorage.getItem(SYNC_URL_KEY)) return;
+      // Nunca se sube nada de forma automática antes de haber leído la nube,
+      // ni mientras haya un conflicto sin resolver por el usuario.
+      if (!cloudRead || conflictPending) return;
       clearTimeout(autoPushTimer);
       autoPushTimer = setTimeout(() => {
         autoPushTimer = null;
@@ -2234,12 +2432,12 @@ function json_(obj) {
       clearTimeout(autoPushTimer);
       autoPushTimer = null;
       const url = localStorage.getItem(SYNC_URL_KEY);
-      if (!url || !hasUnsyncedChanges()) return;
-      const body = syncSnapshot();
-      const blob = new Blob([body], { type: 'text/plain;charset=utf-8' });
-      if (navigator.sendBeacon && navigator.sendBeacon(url, blob)) {
-        localStorage.setItem(SNAPSHOT_KEY, body);
-      }
+      if (!url || !cloudRead || conflictPending || !hasUnsyncedChanges()) return;
+      const blob = new Blob([pushBody()], { type: 'text/plain;charset=utf-8' });
+      // No se marca como sincronizado: sendBeacon no deja leer la respuesta, así que
+      // no hay forma de saber si llegó. Al volver, autoPull() compara con la hoja y
+      // decide; dar por buena una entrega que quizá no ocurrió perdía la edición.
+      navigator.sendBeacon && navigator.sendBeacon(url, blob);
     }
 
     // La hoja de cálculo es la fuente de verdad; localStorage sólo es una caché local
@@ -2257,6 +2455,9 @@ function json_(obj) {
       try {
         const data = await fetchSheet(url);
         applyImportedData(data);
+        setCloudRev(data.rev);
+        conflictPending = false;
+        cloudRead = true;
         markSynced();
         setSyncStatus('Datos cargados desde Google Sheets.');
         showToast('Datos cargados de la nube');
@@ -2273,28 +2474,57 @@ function json_(obj) {
       return res.json();
     }
 
-    // Refresco silencioso: al abrir la página y al volver a ella
+    /* Refresco silencioso: al abrir la página y al volver a ella.
+       Antes se saltaba la lectura en cuanto lo local no coincidía con el último
+       snapshot — justo el estado de un aparato con datos incompletos — y acto
+       seguido el auto-push subía esos datos incompletos. Ahora la nube se lee
+       SIEMPRE y es la comparación de las tres versiones (local, snapshot, nube)
+       la que decide; si ambos lados han cambiado, no se decide solo. */
     async function autoPull() {
       const url = localStorage.getItem(SYNC_URL_KEY);
       if (!url) return;
       if (pullInFlight) return;
       if (Date.now() - lastPullAt < 5000) return;
-      // Sin snapshot previo (navegador nuevo) manda la nube, salvo que ya haya datos locales
-      if (!localStorage.getItem(SNAPSHOT_KEY)) {
-        if (localStorage.getItem(STORAGE_KEY)) return;
-      } else if (hasUnsyncedChanges()) {
-        // Con cambios locales pendientes no pisamos nada: primero ⌘S
-        return;
-      }
 
       pullInFlight = true;
       updateSyncIndicator('busy');
       try {
         const data = await fetchSheet(url);
-        const changed = applyImportedData(data, { preserveUi: true });
+        if (!data || !Array.isArray(data.pois) || !Array.isArray(data.lists)) {
+          throw new Error('formato de datos no válido');
+        }
         lastPullAt = Date.now();
-        markSynced();
-        if (changed) showToast('Datos actualizados desde la nube');
+        setCloudRev(data.rev);
+
+        const remoteSnap = snapshotOf(data.lists, data.pois);
+        const localSnap = syncSnapshot();
+        const baseSnap = localStorage.getItem(SNAPSHOT_KEY);
+
+        if (remoteSnap === localSnap) {
+          // Ya coinciden (p. ej. el sendBeacon de la última salida sí llegó)
+          conflictPending = false;
+          markSynced();
+        } else if (localSnap === EMPTY_SNAPSHOT || localSnap === baseSnap) {
+          // Aquí no hay nada propio que perder: manda la nube
+          conflictPending = false;
+          applyImportedData(data, { preserveUi: true });
+          markSynced();
+          showToast('Datos actualizados desde la nube');
+        } else if (baseSnap && remoteSnap === baseSnap) {
+          // Sólo este aparato ha cambiado: puede subir con seguridad
+          conflictPending = false;
+          updateSyncIndicator();
+        } else {
+          // Los dos lados han cambiado: se congela la subida y elige el usuario
+          conflictPending = true;
+          cloudRead = false;
+          updateSyncIndicator();
+          setSyncStatus('Hay cambios aquí y en la nube. "Cargar de la nube" descarta lo de este aparato; ' +
+            'Guardar en la nube (⌘S) descarta lo de la hoja.', true);
+          showToast('Conflicto: cambios aquí y en la nube', true);
+          return;
+        }
+        cloudRead = true;
       } catch (err) {
         updateSyncIndicator('error');
         setSyncStatus('Error al cargar de la nube: ' + err.message, true);
@@ -2307,12 +2537,12 @@ function json_(obj) {
       if (document.visibilityState === 'hidden') {
         flushAutoPush();
       } else {
-        scheduleAutoPush();  // por si el beacon anterior no llegó a salir
-        autoPull();          // no pisa nada: se salta si quedan cambios locales
+        // Pull primero: decide si lo pendiente de este aparato puede subir
+        autoPull().then(scheduleAutoPush);
       }
     });
     window.addEventListener('pagehide', flushAutoPush);
-    window.addEventListener('focus', autoPull);
+    window.addEventListener('focus', () => autoPull().then(scheduleAutoPush));
 
     // Devuelve true si los datos de la nube difieren de los que había en pantalla
     function applyImportedData(data, opts) {
@@ -2381,8 +2611,8 @@ function json_(obj) {
     applyTheme();
     renderSidebar();
     updateSyncIndicator();
-    scheduleAutoPush();  // sube lo que quedara pendiente de una sesión anterior
-    autoPull();
+    // Primero se lee la nube; autoPull() habilita la subida sólo si no hay conflicto
+    autoPull().then(scheduleAutoPush);
   </script>
 </body>
 </html>
